@@ -53,7 +53,7 @@
     use precision
     use ModelParams
     real(dl)  GetOmegak
-    GetOmegak = 1 - (CP%omegab+CP%omegac+CP%omegav+CP%omegan)
+    GetOmegak = 1 - (CP%omegab+CP%omegac+CP%omegav+CP%omegan+CP%omegax)
 
     end function GetOmegak
 
@@ -81,7 +81,7 @@
     a2=a**2
 
     !  8*pi*G*rho*a**4.
-    grhoa2=grhok*a2+(grhoc+grhob)*a+grhog+grhornomass
+    grhoa2=grhok*a2+(grhoc+grhob)*a+grhog+grhornomass+grhox*a**3
     if (w_lam == -1._dl) then
         grhoa2=grhoa2+grhov*a2**2
     else

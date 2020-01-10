@@ -156,7 +156,7 @@
         type(ReionizationHistory) :: ReionHist
 
         logical flat,closed,open
-        real(dl) omegak
+        real(dl) omegak, omegax
         real(dl) curv,r, Ksign !CP%r = 1/sqrt(|CP%curv|), CP%Ksign = 1,0 or -1
         real(dl) tau0,chi0 !time today and rofChi(CP%tau0/CP%r)
 
@@ -175,7 +175,7 @@
     !     dtaurec - dtau during recombination
     !     adotrad - a(tau) in radiation era
 
-    real(dl) grhom,grhog,grhor,grhob,grhoc,grhov,grhornomass,grhok
+    real(dl) grhom,grhog,grhor,grhob,grhoc,grhox,grhov,grhornomass,grhok
     real(dl) taurst,dtaurec,taurend, tau_maxvis,adotrad
 
     !Neutrinos
@@ -378,6 +378,7 @@
     grhob=grhom*CP%omegab
     grhov=grhom*CP%omegav
     grhok=grhom*CP%omegak
+    grhox=grhom*CP%omegax
     !  adotrad gives the relation a(tau) in the radiation era:
     adotrad = sqrt((grhog+grhornomass+sum(grhormass(1:CP%Nu_mass_eigenstates)))/3)
 

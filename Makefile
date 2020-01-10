@@ -31,7 +31,7 @@ endif
 ifdef NONNATIVE
 FFLAGS+=-O3 -ipo -axCORE-AVX2
 else
-FFLAGS+=-fast
+FFLAGS+=
 endif
 
 ifortVer_major = $(shell ifort -v 2>&1 | cut -d " " -f 3 | cut -d. -f 1)
