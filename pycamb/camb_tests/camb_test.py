@@ -18,7 +18,6 @@ class CambTest(unittest.TestCase):
     def testBackground(self):
         pars = camb.CAMBparams()
         pars.set_cosmology(H0=68.5, ombh2=0.022, omch2=0.122, YHe=0.2453, mnu=0.07, omk=0)
-
         zre = camb.get_zre_from_tau(pars, 0.06)
         age = camb.get_age(pars)
         self.assertAlmostEqual(zre, 8.39, 2)
@@ -29,6 +28,7 @@ class CambTest(unittest.TestCase):
 
         data = camb.CAMBdata()
         data.calc_background(pars)
+
         DA = data.angular_diameter_distance(0.57)
         H = data.hubble_parameter(0.27)
         self.assertAlmostEqual(DA, bao[0][2], 3)
@@ -87,6 +87,7 @@ class CambTest(unittest.TestCase):
         scal = data.luminosity_distance(1.4)
         vec = data.luminosity_distance([1.2, 1.4, 0.1, 1.9])
         self.assertAlmostEqual(scal, vec[1], 5)
+
         pars.set_dark_energy()  # re-set defaults
 
         # test theta
@@ -96,7 +97,6 @@ class CambTest(unittest.TestCase):
             pars.set_cosmology(cosmomc_theta=0.0204085, H0=None, ombh2=0.022271, omch2=0.11914, mnu=0.06, omk=0)
         pars = camb.set_params(cosmomc_theta=0.0104077, H0=None, ombh2=0.022, omch2=0.122, w=-0.95)
         self.assertAlmostEqual(camb.get_background(pars, no_thermo=True).cosmomc_theta(), 0.0104077, 7)
-        pars.set_dark_energy()
 
     def testEvolution(self):
         redshifts = [0.4, 31.5]
@@ -123,6 +123,7 @@ class CambTest(unittest.TestCase):
         pars.set_cosmology(H0=67.5, ombh2=0.022, omch2=0.122, mnu=0.07, omk=0)
         pars.set_dark_energy()  # re-set defaults
         pars.InitPower.set_params(ns=0.965, As=2e-9)
+        pars.NonLinearModel.set_params(halofit_version='takahashi')
 
         self.assertAlmostEqual(pars.scalar_power(1), 1.801e-9, 4)
         self.assertAlmostEqual(pars.scalar_power([1, 1.5])[0], 1.801e-9, 4)
@@ -141,12 +142,12 @@ class CambTest(unittest.TestCase):
         self.assertAlmostEqual(s8[2], 0.80044, 3)
 
         pars.NonLinear = model.NonLinear_both
+
         data.calc_power_spectra(pars)
         kh3, z3, pk3 = data.get_matter_power_spectrum(1e-4, 1, 20)
         self.assertAlmostEqual(pk[-1][-3], 51.909, 2)
         self.assertAlmostEqual(pk3[-1][-3], 57.697, 2)
         self.assertAlmostEqual(pk2[-2][-4], 53.476, 2)
-
         camb.set_feedback_level(0)
 
         PKnonlin = camb.get_matter_power_interpolator(pars, nonlinear=True)
@@ -160,7 +161,7 @@ class CambTest(unittest.TestCase):
         pk_interp2 = PKnonlin2.P(z, kh)
         self.assertTrue(np.sum((pk_interp / pk_interp2 - 1) ** 2) < 0.005)
 
-        camb.set_halofit_version('mead')
+        pars.NonLinearModel.set_params(halofit_version='mead')
         _, _, pk = results.get_nonlinear_matter_power_spectrum(params=pars, var1='delta_cdm', var2='delta_cdm')
         self.assertAlmostEqual(pk[0][160], 824.6, delta=0.5)
 
@@ -171,7 +172,7 @@ class CambTest(unittest.TestCase):
         data.get_unlensed_scalar_cls(2500)
         data.get_tensor_cls(2000)
         cls_lensed = data.get_lensed_scalar_cls(3000)
-        data.get_lens_potential_cls(2000)
+        cphi = data.get_lens_potential_cls(2000)
 
         # check lensed CL against python; will only agree well for high lmax as python has no extrapolation template
         cls_lensed2 = correlations.lensed_cls(cls['unlensed_scalar'], cls['lens_potential'][:, 0], delta_cls=False)
@@ -184,6 +185,90 @@ class CambTest(unittest.TestCase):
         corr, xvals, weights = correlations.gauss_legendre_correlation(cls['lensed_scalar'])
         clout = correlations.corr2cl(corr, xvals, weights, 2500)
         self.assertTrue(np.all(np.abs(clout[2:2300, 2] / cls['lensed_scalar'][2:2300, 2] - 1) < 1e-3))
+
+    def testDarkEnergy(self):
+        pars = camb.CAMBparams()
+        pars.InitPower.set_params(ns=0.965, r=0)
+        for m in model.dark_energy_models:
+            pars.set_dark_energy(w=-0.7, wa=0.2, dark_energy_model=m)
+            C1 = camb.get_results(pars).get_cmb_power_spectra()
+            a = np.logspace(-5, 0, 1000)
+            w = -0.7 + 0.2 * (1 - a)
+            pars2 = pars.copy()
+            pars2.set_dark_energy_w_a(a, w, dark_energy_model=m)
+            C2 = camb.get_results(pars2).get_cmb_power_spectra()
+            for f in ['lens_potential', 'lensed_scalar']:
+                self.assertTrue(np.allclose(C1[f][2:, 0], C2[f][2:, 0]))
+            pars3 = pars2.copy()
+            self.assertAlmostEqual(-0.7, pars3.DarkEnergy.w)
+
+    def testInitialPower(self):
+        pars = camb.CAMBparams()
+        import ctypes
+        P = camb.InitialPowerLaw()
+        P2 = ctypes.pointer(P)
+        self.assertEqual(P.As, pars.InitPower.As)
+        As = 1.8e-9
+        ns = 0.8
+        P.set_params(As=As, ns=ns)
+        self.assertEqual(P.As, As)
+        self.assertEqual(P2.contents.As, As)
+
+        pars2 = camb.CAMBparams()
+        pars2.InitPower.set_params(As=1.7e-9, ns=ns)
+        self.assertEqual(pars2.InitPower.As, 1.7e-9)
+        pars.set_initial_power(pars2.InitPower)
+        self.assertEqual(pars.InitPower.As, 1.7e-9)
+        pars.set_initial_power(P)
+        self.assertEqual(pars.InitPower.As, As)
+
+        ks = np.logspace(-5.5, 2, 1000)
+        pk = (ks / P.pivot_scalar) ** (ns - 1) * As
+        pars2.set_initial_power_table(ks, pk)
+        self.assertAlmostEqual(pars2.scalar_power(1.1), pars.scalar_power(1.1), delta=As * 1e-4)
+        sp = camb.SplinedInitialPower(ks=ks, PK=pk)
+        pars2.set_initial_power(sp)
+        self.assertAlmostEqual(pars2.scalar_power(1.1), pars.scalar_power(1.1), delta=As * 1e-4)
+        self.assertFalse(sp.has_tensors())
+        self.assertFalse(pars2.InitPower.has_tensors())
+
+        sp = camb.SplinedInitialPower()
+        sp.set_scalar_log_regular(10 ** (-5.5), 10. ** 2, pk)
+        pars2.set_initial_power(sp)
+        self.assertAlmostEqual(pars2.scalar_power(1.1), pars.scalar_power(1.1), delta=As * 1e-4)
+
+        sp.set_tensor_log_regular(10 ** (-5.5), 10. ** 2, pk)
+        pars2.set_initial_power(sp)
+        self.assertAlmostEqual(pars2.tensor_power(1.1), pars.scalar_power(1.1), delta=As * 1e-4)
+        self.assertTrue(sp.has_tensors())
+        sp.set_tensor_table([], [])
+        self.assertFalse(sp.has_tensors())
+        pars2.set_initial_power(sp)
+
+        results = camb.get_results(pars2)
+        cl = results.get_lensed_scalar_cls(CMB_unit='muK')
+        pars.InitPower.set_params(As=As, ns=ns)
+        results2 = camb.get_results(pars)
+        cl2 = results2.get_lensed_scalar_cls(CMB_unit='muK')
+        self.assertTrue(np.allclose(cl, cl2, rtol=1e-4))
+        P = camb.InitialPowerLaw(As=2.1e-9, ns=0.9)
+        pars2.set_initial_power(P)
+        pars.InitPower.set_params(As=2.1e-9, ns=0.9)
+        self.assertAlmostEqual(pars2.scalar_power(1.1), pars.scalar_power(1.1), delta=As * 1e-4)
+
+        def PK(k, As, ns):
+            return As * (k / 0.05) ** (ns - 1) * (1 + 0.1 * np.sin(10 * k))
+
+        pars.set_initial_power_function(PK, args=(3e-9, 0.95))
+        P = pars.scalar_power(ks)
+        np.testing.assert_almost_equal(P, PK(ks, 3e-9, 0.95), decimal=4)
+
+    def testInitialPowerMem(self):
+        import gc
+        gc.collect()
+        from camb.baseconfig import F2003Class
+        if F2003Class._instance_count: print('Unfreed instances', F2003Class._instance_count)
+        self.assertFalse(F2003Class._instance_count)
 
     def testSymbolic(self):
         import camb.symbolic as s

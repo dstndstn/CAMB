@@ -1,10 +1,8 @@
 
 #Files containing evolution equations initial power spectrum module
-EQUATIONS     ?= equations
 POWERSPECTRUM ?= power_tilt
 REIONIZATION ?= reionization
 RECOMBINATION ?= recfast
-
 
 BISPECTRUM ?= SeparableBispectrum
 
@@ -12,7 +10,7 @@ BISPECTRUM ?= SeparableBispectrum
 NONLINEAR     ?= halofit_ppf
 
 #Driver program
-DRIVER        ?= inidriver.F90
+DRIVER        ?= inidriver.f90
 #DRIVER       ?= sigma8.f90
 #DRIVER       ?= tester.f90
 
@@ -27,29 +25,31 @@ PYCAMB_OUTPUT_DIR ?= pycamb/camb
 DLL_DIR ?= Releaselib
 
 
-CAMBLIB       = $(OUTPUT_DIR)/libcamb_$(RECOMBINATION).a
+CAMBLIB       = libcamb_$(RECOMBINATION).a
+
+F90WFLAGS     = -Waliasing -Wampersand -Wconversion -Wc-binding-type -Wintrinsics-std \
+        -Wno-tabs -Wintrinsic-shadow -Wline-truncation -Wtarget-lifetime -Wreal-q-constant
+# -Wsurprising -Wunused
 
 F90FLAGS      = $(FFLAGS)
-F90FLAGS += $(MODOUT) $(IFLAG)$(OUTPUT_DIR)/
+#F90FLAGS      += $(F90WFLAGS)
 
 SF90FLAGS      = $(SFFLAGS) $(FFLAGS)
-SF90FLAGS += $(SMODOUT) $(IFLAG)$(DLL_DIR)/
 
 HEALPIXLD     = -L$(HEALPIXDIR)/lib -lhealpix -L$(FITSDIR) -l$(FITSLIB)
+CAMBSRCS      = constants.f90 classes.f90 subroutines.f90 $(POWERSPECTRUM).f90 \
+        $(RECOMBINATION).f90 $(REIONIZATION).f90 DarkEnergyInterface.f90 \
+        modules.f90 bessels.f90 equations.f90 DarkEnergyFluid.f90 \
+        DarkEnergyPPF.f90 $(NONLINEAR).f90 lensing.f90 \
+        $(BISPECTRUM).f90 cmbmain.f90 camb.f90
 
-CAMBOBJ       =  $(OUTPUT_DIR)/constants.o  $(OUTPUT_DIR)/utils.o $(EXTCAMBFILES)  $(OUTPUT_DIR)/subroutines.o  \
-	$(OUTPUT_DIR)/inifile.o  $(OUTPUT_DIR)/$(POWERSPECTRUM).o  $(OUTPUT_DIR)/$(RECOMBINATION).o \
-	$(OUTPUT_DIR)/$(REIONIZATION).o $(OUTPUT_DIR)/modules.o $(OUTPUT_DIR)/bessels.o $(OUTPUT_DIR)/$(EQUATIONS).o \
-	$(OUTPUT_DIR)/$(NONLINEAR).o $(OUTPUT_DIR)/lensing.o $(OUTPUT_DIR)/$(BISPECTRUM).o $(OUTPUT_DIR)/cmbmain.o \
-	$(OUTPUT_DIR)/camb.o
+CAMBOBJ       = $(patsubst %.f90,%.o,$(CAMBSRCS))
+CAMBSO        = camb_python.f90
 
-CAMBSO       =  $(DLL_DIR)/constants.o  $(DLL_DIR)/utils.o $(EXTCAMBFILES)  $(DLL_DIR)/subroutines.o  \
-	$(DLL_DIR)/inifile.o  $(DLL_DIR)/$(POWERSPECTRUM).o  $(DLL_DIR)/$(RECOMBINATION).o \
-	$(DLL_DIR)/$(REIONIZATION).o $(DLL_DIR)/modules.o $(DLL_DIR)/bessels.o $(DLL_DIR)/$(EQUATIONS).o \
-	$(DLL_DIR)/$(NONLINEAR).o $(DLL_DIR)/lensing.o $(DLL_DIR)/$(BISPECTRUM).o $(DLL_DIR)/cmbmain.o \
-	$(DLL_DIR)/camb.o $(DLL_DIR)/camb_python.o
 
-#F90CRLINK ?= -lstdc++
+FORUTILS_DIR = $(FORUTILSPATH)/$(OUTPUT_DIR)/
+camblib.so: FORUTILS_DIR=$(FORUTILSPATH)/$(DLL_DIR)/
+F90CRLINK     += -L$(FORUTILS_DIR) -lforutils
 
 ## CosmoRec
 ifeq ($(RECOMBINATION),cosmorec)
@@ -74,76 +74,50 @@ all: camb camblib.so libcamb
 Release: camb camblib.so
 Debug: camb camblib.so
 
-libcamb: $(CAMBLIB)
+libcamb: libforutils directories
+	$(MAKE) -C $(OUTPUT_DIR) -r -f ../Makefile_main $(CAMBLIB)
+
+libcambso: libforutils_so directories_so
+	$(MAKE) -C $(DLL_DIR) -r -f ../Makefile_main $(CAMBLIB) F90FLAGS="$(SF90FLAGS)" OUTPUT_DIR=$(DLL_DIR)
+
+camb: libcamb $(DRIVER)
+	$(F90C) $(F90FLAGS) $(MODOUT) $(IFLAG)$(OUTPUT_DIR)/ $(IFLAG)$(FORUTILS_DIR) \
+		$(DRIVER) $(OUTPUT_DIR)/$(CAMBLIB) $(F90CRLINK) -o $@
+
+camblib.so: libcambso $(CAMBSO)
+	$(F90C) $(SF90FLAGS) $(SMODOUT) $(IFLAG)$(DLL_DIR)/ $(IFLAG)$(FORUTILS_DIR)  \
+		$(CAMBSO) $(DLL_DIR)/$(CAMBLIB) $(F90CRLINK) -o $(DLL_DIR)/camblib.so
+	cp $(DLL_DIR)/camblib.so $(PYCAMB_OUTPUT_DIR)
 
 
-$(OUTPUT_DIR)/subroutines.o: $(OUTPUT_DIR)/constants.o $(OUTPUT_DIR)/utils.o
-$(OUTPUT_DIR)/$(POWERSPECTRUM).o: $(OUTPUT_DIR)/subroutines.o  $(OUTPUT_DIR)/inifile.o
-$(OUTPUT_DIR)/$(RECOMBINATION).o: $(OUTPUT_DIR)/subroutines.o $(OUTPUT_DIR)/inifile.o
-$(OUTPUT_DIR)/$(REIONIZATION).o: $(OUTPUT_DIR)/constants.o $(OUTPUT_DIR)/inifile.o
-$(OUTPUT_DIR)/modules.o: $(OUTPUT_DIR)/$(REIONIZATION).o $(OUTPUT_DIR)/$(POWERSPECTRUM).o $(OUTPUT_DIR)/$(RECOMBINATION).o
-$(OUTPUT_DIR)/bessels.o: $(OUTPUT_DIR)/modules.o
-$(OUTPUT_DIR)/$(EQUATIONS).o: $(OUTPUT_DIR)/bessels.o
-$(OUTPUT_DIR)/$(NONLINEAR).o:  $(OUTPUT_DIR)/modules.o $(OUTPUT_DIR)/$(EQUATIONS).o
-$(OUTPUT_DIR)/lensing.o: $(OUTPUT_DIR)/bessels.o
-$(OUTPUT_DIR)/$(BISPECTRUM).o: $(OUTPUT_DIR)/lensing.o $(OUTPUT_DIR)/modules.o
-$(OUTPUT_DIR)/cmbmain.o: $(OUTPUT_DIR)/lensing.o $(OUTPUT_DIR)/$(NONLINEAR).o $(OUTPUT_DIR)/$(EQUATIONS).o $(OUTPUT_DIR)/$(BISPECTRUM).o
-$(OUTPUT_DIR)/camb.o: $(OUTPUT_DIR)/cmbmain.o
-$(OUTPUT_DIR)/Matrix_utils.o: $(OUTPUT_DIR)/utils.o
+$(CAMBLIB): $(CAMBOBJ)
+	$(AR) -r $@ $(CAMBOBJ)
 
-$(DLL_DIR)/subroutines.o: $(DLL_DIR)/constants.o $(DLL_DIR)/utils.o
-$(DLL_DIR)/$(POWERSPECTRUM).o: $(DLL_DIR)/subroutines.o  $(DLL_DIR)/inifile.o
-$(DLL_DIR)/$(RECOMBINATION).o: $(DLL_DIR)/subroutines.o $(DLL_DIR)/inifile.o
-$(DLL_DIR)/$(REIONIZATION).o: $(DLL_DIR)/constants.o $(DLL_DIR)/inifile.o
-$(DLL_DIR)/modules.o: $(DLL_DIR)/$(REIONIZATION).o $(DLL_DIR)/$(POWERSPECTRUM).o $(DLL_DIR)/$(RECOMBINATION).o
-$(DLL_DIR)/bessels.o: $(DLL_DIR)/modules.o
-$(DLL_DIR)/$(EQUATIONS).o: $(DLL_DIR)/bessels.o
-$(DLL_DIR)/$(NONLINEAR).o:  $(DLL_DIR)/modules.o $(DLL_DIR)/$(EQUATIONS).o
-$(DLL_DIR)/lensing.o: $(DLL_DIR)/bessels.o
-$(DLL_DIR)/$(BISPECTRUM).o: $(DLL_DIR)/lensing.o $(DLL_DIR)/modules.o
-$(DLL_DIR)/cmbmain.o: $(DLL_DIR)/lensing.o $(DLL_DIR)/$(NONLINEAR).o $(DLL_DIR)/$(EQUATIONS).o $(DLL_DIR)/$(BISPECTRUM).o
-$(DLL_DIR)/camb.o: $(DLL_DIR)/cmbmain.o
-$(DLL_DIR)/Matrix_utils.o: $(DLL_DIR)/utils.o
-$(DLL_DIR)/camb_python.o: $(DLL_DIR)/camb.o
+camb_fits: libforutils directories writefits.f90 $(CAMBOBJ) $(DRIVER)
+	$(F90C) $(F90FLAGS) -I$(HEALPIXDIR)/include $(CAMBOBJ) writefits.f90 $(DRIVER) \
+		$(F90CRLINK) $(HEALPIXLD) -DWRITE_FITS -o $@
 
-camblib.so: folders $(CAMBSO)
-	$(F90C) $(SF90FLAGS) $(CAMBSO) -o $(DLL_DIR)/camblib.so
-	cp $(DLL_DIR)/camblib.so $(PYCAMB_OUTPUT_DIR)  >/dev/null || :
-
-camb: directories $(CAMBOBJ) $(DRIVER)
-	$(F90C) $(F90FLAGS) $(CAMBOBJ) $(DRIVER) $(F90CRLINK) -o $@
-
-$(CAMBLIB): directories $(CAMBOBJ)
-	ar -r $@ $(CAMBOBJ)
-
-camb_fits: directories writefits.f90 $(CAMBOBJ) $(DRIVER)
-	$(F90C) $(F90FLAGS) -I$(HEALPIXDIR)/include $(CAMBOBJ) writefits.f90 $(DRIVER) $(HEALPIXLD) -DWRITE_FITS -o $@
-
-$(DLL_DIR)/%.o: %.f90
-	$(F90C) $(SF90FLAGS) -c $*.f90 -o $(DLL_DIR)/$*.o
-
-$(DLL_DIR)/%.o: %.F90
-	$(F90C) $(SF90FLAGS) -c $*.F90 -o $(DLL_DIR)/$*.o
-
-$(OUTPUT_DIR)/%.o: %.f90
-	$(F90C) $(F90FLAGS) -c $*.f90 -o $(OUTPUT_DIR)/$*.o
-
-$(OUTPUT_DIR)/%.o: %.F90
-	$(F90C) $(F90FLAGS) -c $*.F90 -o $(OUTPUT_DIR)/$*.o
-
-
-folders:
-	mkdir -p $(DLL_DIR)
+%.o: ../%.f90
+	$(F90C) $(F90FLAGS) $(IFLAG)$(FORUTILS_DIR) -c $< -o $*.o
 
 directories:
 	mkdir -p $(OUTPUT_DIR)
 
+directories_so:
+	mkdir -p $(DLL_DIR)
+
+libforutils_so:
+	cd $(FORUTILSPATH) && \
+	$(MAKE) $(DLL_DIR)
+
+libforutils:
+	cd $(FORUTILSPATH) && \
+	$(MAKE) $(OUTPUT_DIR)
+
 
 clean:
-	rm -f *.o *.a *.d core *.mod $(DLL_DIR)/*.o $(DLL_DIR)/*.mod
-	rm -f *.o *.a *.d core *.mod $(OUTPUT_DIR)/*.o $(OUTPUT_DIR)/*.mod
-	rm -rf Release*
-	rm -rf Debug*
+	-rm -f *.o *.a *.d core *.mod *.optrpt *.d
+	-rm -rf Release* Debug*
 
 delete:
 	rm -f camb	
@@ -156,6 +130,10 @@ cleanCR:
 libCosmoRec.a:
 	cd $(COSMOREC_PATH); make lib;
 
-
 libhyrec.a:
 	cd $(HYREC_PATH); make libhyrec.a;
+
+export
+-include *.d
+
+.PHONY: clean directories libcamb Release Debug

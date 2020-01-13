@@ -1,5 +1,5 @@
 from .baseconfig import camblib, CAMBError, CAMBValueError, CAMBUnknownArgumentError, CAMB_Structure, dll_import, \
-    mock_load
+    mock_load, F2003Class
 import ctypes
 from ctypes import c_float, c_int, c_double, c_bool, POINTER, byref
 from . import model, constants, initialpower, lensing
@@ -9,8 +9,6 @@ from numpy.ctypeslib import ndpointer
 import logging
 import sys
 import six
-import copy
-from inspect import ismethod
 
 if not mock_load:
     from scipy.interpolate import UnivariateSpline, RectBivariateSpline
@@ -23,11 +21,6 @@ else:
 _debug_params = False
 
 
-class _CAMBdata(CAMB_Structure):
-    # contains complex types with pointers, so just set up dummy
-    _fields_ = []
-
-
 class _MatterTransferData(CAMB_Structure):
     # contains complex types with pointers, so just set up dummy
     _fields_ = [('num_q_trans', c_int),
@@ -35,8 +28,8 @@ class _MatterTransferData(CAMB_Structure):
                 ('sigma_8', POINTER(c_double)),
                 ('sigma2_vdelta_8', POINTER(c_double)),
                 ('TransferData', POINTER(c_float)),
-                ('sigma_8_size', c_int * 2),
-                ('sigma2_vdelta_8_size', c_int * 2),
+                ('sigma_8_size', c_int),
+                ('sigma2_vdelta_8_size', c_int),
                 ('TransferData_size', c_int * 3)
                 ]
 
@@ -64,31 +57,6 @@ d_arg = POINTER(c_double)
 numpy_2d = ndpointer(c_double, flags='C_CONTIGUOUS', ndim=2)
 numpy_1d = ndpointer(c_double, flags='C_CONTIGUOUS')
 
-CAMBdata_new = camblib.__handles_MOD_cambdata_new
-CAMBdata_new.argtypes = [POINTER(POINTER(_CAMBdata))]
-
-CAMBdata_free = camblib.__handles_MOD_cambdata_free
-CAMBdata_free.argtypes = [POINTER(POINTER(_CAMBdata))]
-
-CAMBdata_getparams = camblib.__handles_MOD_cambdata_getparams
-CAMBdata_getparams.argtypes = [POINTER(_CAMBdata), POINTER(POINTER(model.CAMBparams))]
-
-CAMBdata_setparams = camblib.__handles_MOD_cambdata_setparams
-CAMBdata_setparams.argtypes = [POINTER(_CAMBdata), POINTER(model.CAMBparams)]
-
-CAMBdata_gettransfers = camblib.__handles_MOD_cambdata_gettransfers
-CAMBdata_gettransfers.argtypes = [POINTER(_CAMBdata), POINTER(model.CAMBparams),
-                                  POINTER(c_bool)]
-CAMBdata_gettransfers.restype = c_int
-
-CAMBdata_transferstopowers = camblib.__camb_MOD_camb_transferstopowers
-CAMBdata_transferstopowers.argtypes = [POINTER(_CAMBdata)]
-
-CAMBdata_mattertransferdata = camblib.__handles_MOD_cambdata_mattertransferdata
-CAMBdata_mattertransferdata.argtypes = [POINTER(_CAMBdata), POINTER(_MatterTransferData)]
-
-CAMBdata_cltransferdata = camblib.__handles_MOD_cambdata_cltransferdata
-CAMBdata_cltransferdata.argtypes = [POINTER(_CAMBdata), POINTER(_ClTransferData), int_arg]
 CAMB_SetTotCls = camblib.__handles_MOD_camb_settotcls
 CAMB_SetUnlensedCls = camblib.__handles_MOD_camb_setunlensedcls
 CAMB_SetLensPotentialCls = camblib.__handles_MOD_camb_setlenspotentialcls
@@ -96,7 +64,7 @@ CAMB_SetUnlensedScalCls = camblib.__handles_MOD_camb_setunlensedscalcls
 CAMB_SetLensedScalCls = camblib.__handles_MOD_camb_setlensedscalcls
 CAMB_SetTensorCls = camblib.__handles_MOD_camb_settensorcls
 
-_set_cl_args = [int_arg, numpy_1d, int_arg]
+_set_cl_args = [int_arg, numpy_1d]
 
 CAMB_SetTotCls.argtypes = _set_cl_args
 CAMB_SetUnlensedCls.argtypes = _set_cl_args
@@ -106,8 +74,7 @@ CAMB_SetTensorCls.argtypes = _set_cl_args
 CAMB_SetLensedScalCls.argtypes = _set_cl_args
 
 CAMB_SetUnlensedScalarArray = camblib.__handles_MOD_camb_setunlensedscalararray
-CAMB_SetUnlensedScalarArray.argtypes = [int_arg, ndpointer(c_double, flags='F_CONTIGUOUS', ndim=3),
-                                        int_arg, int_arg]
+CAMB_SetUnlensedScalarArray.argtypes = [int_arg, ndpointer(c_double, flags='F_CONTIGUOUS', ndim=3), int_arg]
 
 del _set_cl_args
 
@@ -125,23 +92,6 @@ CAMB_GetAge.argtypes = [POINTER(model.CAMBparams)]
 CAMB_GetZreFromTau = camblib.__camb_MOD_camb_getzrefromtau
 CAMB_GetZreFromTau.restype = c_double
 CAMB_GetZreFromTau.argtypes = [POINTER(model.CAMBparams), d_arg]
-
-CAMB_SetParamsForBackground = camblib.__handles_MOD_cambdata_setparamsforbackground
-CAMB_SetParamsForBackground.argtypes = [POINTER(_CAMBdata), POINTER(model.CAMBparams)]
-
-CAMB_CalcBackgroundTheory = camblib.__handles_MOD_cambdata_calcbackgroundtheory
-CAMB_CalcBackgroundTheory.argtypes = [POINTER(_CAMBdata), POINTER(model.CAMBparams)]
-CAMB_CalcBackgroundTheory.restype = c_int
-
-CAMBdata_GetLinearMatterPower = camblib.__handles_MOD_cambdata_getlinearmatterpower
-CAMBdata_GetLinearMatterPower.argtypes = [POINTER(_CAMBdata), numpy_2d, int_arg, int_arg, int_arg]
-
-CAMBdata_GetNonLinearMatterPower = camblib.__handles_MOD_cambdata_getnonlinearmatterpower
-CAMBdata_GetNonLinearMatterPower.argtypes = [POINTER(_CAMBdata), numpy_2d, int_arg, int_arg, int_arg]
-
-CAMBdata_GetMatterPower = camblib.__handles_MOD_cambdata_getmatterpower
-CAMBdata_GetMatterPower.argtypes = [POINTER(_CAMBdata), numpy_2d,
-                                    d_arg, d_arg, int_arg, int_arg, int_arg]
 
 AngularDiameterDistance = camblib.__modelparams_MOD_angulardiameterdistance
 AngularDiameterDistance.argtyes = [d_arg]
@@ -204,7 +154,7 @@ class MatterTransferData(object):
 
     :ivar nq:  number of q modes calculated
     :ivar q: array of q values calculated
-    :ivar sigma_8: array of :math:`\sigma_8` values for each redshift for each power spectrum
+    :ivar sigma_8: array of :math:`\sigma_8` values for each redshift
     :ivar sigma2_vdelta_8: array of v-delta8 correlation, so sigma2_vdelta_8/sigma_8 can define growth
     :ivar transfer_data: numpy array T[entry, q_index, z_index] storing transfer functions for each redshift and q; entry+1 can be
 
@@ -309,7 +259,7 @@ def set_z_outputs(z_outputs):
     CAMB_SetBackgroundOutputs_z(z_outputs, byref(c_int(len(z_outputs))))
 
 
-class CAMBdata(object):
+class CAMBdata(F2003Class):
     """
     An object for storing transfer function data and parameters for CAMB.
     Not that it *only* stores transfer functions. If you want to get power spectra or background functions,
@@ -322,26 +272,10 @@ class CAMBdata(object):
     :ivar Params: the :class:`.model.CAMBparams` parameters being used
 
     """
+    _fields_ = []
 
-    def __init__(self):
-        self._key = POINTER(_CAMBdata)()
-        CAMBdata_new(byref(self._key))
+    def init_members(self, **kwargs):
         self.Params = self.get_params()
-        self._one = c_int(1)
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        self.free()
-
-    def __del__(self):
-        self.free()
-
-    def free(self):
-        if self._key:
-            CAMBdata_free(byref(self._key))
-            self._key = None
 
     def set_params(self, params):
         """
@@ -352,7 +286,8 @@ class CAMBdata(object):
         :param params: a :class:`.model.CAMBparams` instance
         """
         assert (isinstance(params, model.CAMBparams))
-        CAMBdata_setparams(self._key, byref(params))
+        CAMBdata_setparams(ctypes.pointer(self), byref(params))
+        self.init_members()
 
     def get_params(self):
         """
@@ -363,8 +298,10 @@ class CAMBdata(object):
         """
 
         p = POINTER(model.CAMBparams)()
-        CAMBdata_getparams(self._key, byref(p))
-        return p.contents
+        CAMBdata_getparams(ctypes.pointer(self), byref(p))
+        pars = p.contents
+        pars._set_allocatables()
+        return pars
 
     def get_derived_params(self):
         """
@@ -410,7 +347,7 @@ class CAMBdata(object):
 
         :param params:  :class:`.model.CAMBparams` instance to use
         """
-        CAMB_SetParamsForBackground(self._key, byref(params))
+        CAMB_SetParamsForBackground(ctypes.pointer(self), byref(params))
 
     def calc_background(self, params):
         """
@@ -418,7 +355,7 @@ class CAMBdata(object):
         e.g. call this if you want to get derived parameters and call background functions
         :param params:  :class:`.model.CAMBparams` instance to use
         """
-        res = CAMB_CalcBackgroundTheory(self._key, byref(params))
+        res = CAMB_CalcBackgroundTheory(ctypes.pointer(self), byref(params))
         if res:
             raise CAMBError('Error %s in calc_background' % res)
 
@@ -433,7 +370,10 @@ class CAMBdata(object):
         opt = c_bool()
         opt.value = only_transfers
         if not only_transfers: self._check_powers(params)
-        return CAMBdata_gettransfers(self._key, byref(params), byref(opt))
+        res = CAMBdata_gettransfers(ctypes.pointer(self), byref(params), byref(opt))
+        params._set_allocatables()  # currently CAMB_GetResults reassigns params, changing the instance of allocatables
+        self.Params = self.get_params()
+        return res
 
     def _check_powers(self, params=None):
         if params is None: params = self.Params
@@ -455,7 +395,7 @@ class CAMBdata(object):
                 raise CAMBError('Error getting transfer functions: %u' % result)
         else:
             self._check_powers()
-            CAMBdata_transferstopowers(self._key)
+            CAMBdata_transferstopowers(ctypes.pointer(self))
 
     def power_spectra_from_transfer(self, initial_power_params):
         """
@@ -463,11 +403,11 @@ class CAMBdata(object):
         using a new set of initial power spectrum parameters with otherwise the same cosmology.
         This is typically much faster that re-calculating everything, as the transfer functions can be re-used.
 
-        :param initial_power_params: :class:`.initialpower.InitialPowerParams` instance with new primordial power spectrum parameters
+        :param initial_power_params: :class:`.initialpower.InitialPowerLaw` or :class:`.initialpower.SplinedInitialPower`instance with new primordial power spectrum parameters
         """
         self.Params.set_initial_power(initial_power_params)
         self._check_powers()
-        CAMBdata_transferstopowers(self._key)
+        CAMBdata_transferstopowers(ctypes.pointer(self))
 
     def _CMB_unit(self, CMB_unit):
         if isinstance(CMB_unit, six.string_types):
@@ -585,7 +525,8 @@ class CAMBdata(object):
         """
 
         cdata = _ClTransferData()
-        CAMBdata_cltransferdata(self._key, byref(cdata), byref(c_int(['scalar', 'vector', 'tensor'].index(tp))))
+        CAMBdata_cltransferdata(ctypes.pointer(self), byref(cdata),
+                                byref(c_int(['scalar', 'vector', 'tensor'].index(tp))))
         data = ClTransferData()
         data.NumSources = cdata.NumSources
         data.q = fortran_array(cdata.q, cdata.q_size)
@@ -607,9 +548,9 @@ class CAMBdata(object):
         :return: nd array, A_{qti}, size(q) x size(times) x len(vars), or 2d array if q is scalar
         """
 
-        old_boost = model._lAccuracyBoost.value
+        old_boost = self.Params.Accuracy.lAccuracyBoost
         try:
-            if lAccuracyBoost: model._lAccuracyBoost.value = lAccuracyBoost
+            if lAccuracyBoost: self.Params.Accuracy.lAccuracyBoost = lAccuracyBoost
             if not isinstance(vars, (tuple, list)):
                 vars = [vars]
             import sympy
@@ -643,9 +584,9 @@ class CAMBdata(object):
             if ncustom:
                 from . import symbolic
                 funcPtr = symbolic.compile_sympy_to_camb_source_func(custom_vars, frame=frame)
-                custom_source_func = ctypes.cast(funcPtr, ctypes.c_voidp)
+                custom_source_func = ctypes.cast(funcPtr, ctypes.c_void_p)
             else:
-                custom_source_func = ctypes.c_voidp(0)
+                custom_source_func = ctypes.c_void_p(0)
             nvars = num_standard_names + ncustom
             outputs = np.empty((k.shape[0], times.shape[0], nvars))
             if CAMB_TimeEvolution(byref(c_int(k.shape[0])), k, byref(c_int(times.shape[0])), times[indices],
@@ -656,7 +597,7 @@ class CAMBdata(object):
             i_rev[indices] = np.arange(times.shape[0])
             outputs = outputs[:, i_rev, :]
         finally:
-            model._lAccuracyBoost.value = old_boost
+            self.Params.Accuracy.lAccuracyBoost = old_boost
         if np.isscalar(q):
             return outputs[0, :, :][:, ix]
         else:
@@ -724,12 +665,12 @@ class CAMBdata(object):
             raise CAMBError("must have Params.WantTransfer to get matter transfers and power")
 
         cdata = _MatterTransferData()
-        CAMBdata_mattertransferdata(self._key, byref(cdata))
+        CAMBdata_mattertransferdata(ctypes.pointer(self), byref(cdata))
         data = MatterTransferData()
         data.nq = cdata.num_q_trans
         data.q = nplib.as_array(cdata.q_trans, shape=(data.nq,))
-        data.sigma_8 = fortran_array(cdata.sigma_8, cdata.sigma_8_size)
-        data.sigma2_vdelta_8 = fortran_array(cdata.sigma2_vdelta_8, cdata.sigma2_vdelta_8_size)
+        data.sigma_8 = nplib.as_array(cdata.sigma_8, shape=(cdata.sigma_8_size,))
+        data.sigma2_vdelta_8 = nplib.as_array(cdata.sigma2_vdelta_8, shape=(cdata.sigma2_vdelta_8_size,))
         data.transfer_data = fortran_array(cdata.TransferData, cdata.TransferData_size, dtype=np.float32)
         return data
 
@@ -767,9 +708,9 @@ class CAMBdata(object):
         hubble_units = c_int(hubble_units)
         PK = np.empty((nz, nk))
         if nonlinear:
-            CAMBdata_GetNonLinearMatterPower(self._key, PK, byref(var1), byref(var2), byref(hubble_units))
+            CAMBdata_GetNonLinearMatterPower(ctypes.pointer(self), PK, byref(var1), byref(var2), byref(hubble_units))
         else:
-            CAMBdata_GetLinearMatterPower(self._key, PK, byref(var1), byref(var2), byref(hubble_units))
+            CAMBdata_GetLinearMatterPower(ctypes.pointer(self), PK, byref(var1), byref(var2), byref(hubble_units))
 
         z = self.Params.Transfer.PK_redshifts[:nz]
         z.reverse()
@@ -797,7 +738,7 @@ class CAMBdata(object):
         :return: array of :math:`\sigma_8` values, in order of increasing time (decreasing redshift)
         """
         mtrans = self.get_matter_transfer_data()
-        return mtrans.sigma_8[:, 0]
+        return mtrans.sigma_8[:]
 
     def get_fsigma8(self):
         r"""
@@ -808,7 +749,7 @@ class CAMBdata(object):
         :return: array of f*sigma_8 values, in order of increasing time (decreasing redshift)
         """
         mtrans = self.get_matter_transfer_data()
-        return mtrans.sigma2_vdelta_8[:, 0] / mtrans.sigma_8[:, 0]
+        return mtrans.sigma2_vdelta_8 / mtrans.sigma_8
 
     def get_matter_power_spectrum(self, minkh=1e-4, maxkh=1.0, npoints=100,
                                   var1=None, var2=None,
@@ -841,7 +782,7 @@ class CAMBdata(object):
         var1, var2 = self._transfer_var(var1, var2)
 
         dlnkh = (np.log(maxkh) - np.log(minkh)) / (npoints - 1)
-        CAMBdata_GetMatterPower(self._key, PK, byref(c_double(minkh)),
+        CAMBdata_GetMatterPower(ctypes.pointer(self), PK, byref(c_double(minkh)),
                                 byref(c_double(dlnkh)), byref(c_int(npoints)), byref(var1), byref(var2))
         z = self.Params.Transfer.PK_redshifts[:nz]
         z.reverse()
@@ -925,7 +866,7 @@ class CAMBdata(object):
         lmax = self._lmax_setting(lmax)
         res = np.empty((lmax + 1, 4))
         opt = c_int(lmax)
-        CAMB_SetTotCls(byref(opt), res, byref(self._one))
+        CAMB_SetTotCls(byref(opt), res)
         self._scale_cls(res, CMB_unit, raw_cl)
         return res
 
@@ -944,7 +885,7 @@ class CAMBdata(object):
         lmax = self._lmax_setting(lmax, unlensed=True)
         res = np.empty((lmax + 1, 4))
         opt = c_int(lmax)
-        CAMB_SetTensorCls(byref(opt), res, byref(self._one))
+        CAMB_SetTensorCls(byref(opt), res)
         self._scale_cls(res, CMB_unit, raw_cl)
         return res
 
@@ -960,7 +901,7 @@ class CAMBdata(object):
         lmax = self._lmax_setting(lmax, unlensed=True)
         res = np.empty((lmax + 1, 4))
         opt = c_int(lmax)
-        CAMB_SetUnlensedScalCls(byref(opt), res, byref(self._one))
+        CAMB_SetUnlensedScalCls(byref(opt), res)
         self._scale_cls(res, CMB_unit, raw_cl)
         return res
 
@@ -990,7 +931,7 @@ class CAMBdata(object):
         lmax = self._lmax_setting(lmax)
         res = np.empty((lmax + 1, 4))
         opt = c_int(lmax)
-        CAMB_SetLensedScalCls(byref(opt), res, byref(self._one))
+        CAMB_SetLensedScalCls(byref(opt), res)
         self._scale_cls(res, CMB_unit, raw_cl)
         return res
 
@@ -1009,7 +950,7 @@ class CAMBdata(object):
         lmax = self._lmax_setting(lmax, unlensed=True)
         res = np.empty((lmax + 1, 3))
         opt = c_int(lmax)
-        CAMB_SetLensPotentialCls(byref(opt), res, byref(self._one))
+        CAMB_SetLensPotentialCls(byref(opt), res)
         self._scale_cls(res, CMB_unit, raw_cl, lens_potential=True)
         return res
 
@@ -1027,7 +968,7 @@ class CAMBdata(object):
             raise CAMBError('unlensed_scalar_array not calculated (set model.has_cl_2D_array)')
         n = 3 + model.num_redshiftwindows.value + len(custom_source_names)
         res = np.empty((n, n, lmax + 1), order='F')
-        CAMB_SetUnlensedScalarArray(byref(c_int(lmax)), res, byref(self._one), byref(c_int(n)))
+        CAMB_SetUnlensedScalarArray(byref(c_int(lmax)), res, byref(c_int(n)))
         return res
 
     def get_cmb_unlensed_scalar_array_dict(self, params=None, lmax=None, CMB_unit=None, raw_cl=False):
@@ -1342,16 +1283,15 @@ def set_params(cp=None, verbose=False, **params):
 
     E.g.::
 
-      cp = camb.set_params(ns=1, omch2=0.1, w=-0.95, ALens=1.2, lmax=2000)
+      cp = camb.set_params(ns=1, omch2=0.1, w=-0.95, Alens=1.2, lmax=2000)
 
     This is equivalent to::
 
       cp = model.CAMBparams()
       cp.set_dark_energy(w=-0.95)
-      cp.set_cosmology(omch2=0.1)
+      cp.set_cosmology(omch2=0.1, Alens=1.2)
       cp.set_for_lmax(lmax=2000)
       cp.InitPower.set_params(ns=1)
-      lensing.ALens.value = 1.2
 
 
     :param **params: the values of the parameters
@@ -1359,6 +1299,9 @@ def set_params(cp=None, verbose=False, **params):
     :param verbose: print out the equivalent set of commands
 
     """
+
+    if 'ALens' in params:
+        raise ValueError('Use Alens not ALens')
 
     if cp is None:
         cp = model.CAMBparams()
@@ -1370,9 +1313,9 @@ def set_params(cp=None, verbose=False, **params):
         _used_params.add('ALens')
         lensing.ALens.value = params['ALens']
 
-    #Note order is important: must call set_dark_energy before set_cosmology if setting cosmomc_theta
-    setters = [cp.set_accuracy, cp.set_dark_energy, cp.set_cosmology, cp.set_initial_power,
-               cp.set_matter_power, cp.set_for_lmax, cp.InitPower.set_params]
+    # Note order is important: must call set_dark_energy before set_cosmology if setting cosmomc_theta
+    setters = [cp.set_accuracy, cp.set_dark_energy, cp.set_cosmology,
+               cp.set_matter_power, cp.set_for_lmax, cp.InitPower.set_params, cp.NonLinearModel.set_params]
 
     for setter in setters:
         kwargs = {k: params[k] for k in getargspec(setter).args[1:] if k in params}
@@ -1389,6 +1332,35 @@ def set_params(cp=None, verbose=False, **params):
     if unused_params:
         raise CAMBUnknownArgumentError("Unrecognized parameters: %s" % unused_params)
     return cp
+
+
+def set_params_cosmomc(p, num_massive_neutrinos=1, neutrino_hierarchy='degenerate',
+                       dark_energy_model='ppf', lmax=2500, lens_potential_accuracy=1, inpars=None):
+    """
+    get CAMBParams for dictionary of cosmomc-named parameters assuming Planck 2018 defaults
+    :param p: dictionary of cosmomc parameters (e.g. from getdist.types.BestFit's getParamDict() function)
+    :param num_massive_neutrinos: usually 1 if fixed mnu=0.06 eV, three if mnu varying
+    :param neutrino_hierarchy: hierarchy
+    :param dark_energy_model: ppf or fluid dark energy model
+    :param lmax: lmax for accuracy settings
+    :param lens_potential_accuracy: lensing accuracy parameter
+    :param inpars: optional input CAMBParams to set
+    :return:
+    """
+    pars = inpars or model.CAMBparams()
+    if p.get('alpha1', 0) or p.get('Aphiphi', 1) != 1:
+        raise ValueError('Parameter not currrently supported by set_params_cosmomc')
+    pars.set_cosmology(H0=p['H0'], ombh2=p['omegabh2'], omch2=p['omegach2'], mnu=p.get('mnu', 0.06),
+                       omk=p.get('omegak', 0), tau=p['tau'], deltazrei=p.get('deltazrei', None),
+                       nnu=p.get('nnu', 3.046), Alens=p.get('Alens', 1.0),
+                       YHe=p.get('yheused', None), meffsterile=p.get('meffsterile', 0),
+                       num_massive_neutrinos=num_massive_neutrinos, neutrino_hierarchy=neutrino_hierarchy)
+    pars.InitPower.set_params(ns=p['ns'], r=p.get('r', 0), As=p['A'] * 1e-9, nrun=p.get('nrun', 0),
+                              nrunrun=p.get('nrunrun', 0))
+    pars.set_dark_energy(w=p.get('w', -1), wa=p.get('wa', 0), dark_energy_model=dark_energy_model)
+    pars.set_for_lmax(lmax, lens_potential_accuracy=lens_potential_accuracy)
+    pars.WantTensors = pars.InitPower.has_tensors()
+    return pars
 
 
 def get_matter_power_interpolator(params, zmin=0, zmax=10, nz_step=100, zs=None, kmax=10, nonlinear=True,
@@ -1420,7 +1392,8 @@ def get_matter_power_interpolator(params, zmin=0, zmax=10, nz_step=100, zs=None,
         if return_z_k=True, instead return interpolator, z, k where z, k are the grid used
     """
 
-    pars = copy.deepcopy(params)
+    pars = params.copy()
+
     if zs is None:
         zs = zmin + np.exp(np.log(zmax - zmin + 1) * np.linspace(0, 1, nz_step)) - 1
     pars.set_matter_power(redshifts=zs, kmax=kmax, k_per_logint=k_per_logint, silent=True)
@@ -1480,7 +1453,7 @@ def set_custom_scalar_sources(custom_sources, source_names=None, source_ell_scal
             scales[:] = source_ell_scales
 
     _current_source_func = symbolic.compile_sympy_to_camb_source_func(custom_sources, frame=frame, code_path=code_path)
-    custom_source_func = ctypes.cast(_current_source_func, ctypes.c_voidp)
+    custom_source_func = ctypes.cast(_current_source_func, ctypes.c_void_p)
     CAMB_SetCustomSourcesFunc(byref(c_int(len(custom_sources))), byref(custom_source_func), scales)
 
 
@@ -1489,3 +1462,47 @@ def clear_custom_scalar_sources():
     custom_source_names[:] = []
     CAMB_SetCustomSourcesFunc(byref(c_int(0)), byref(ctypes.c_void_p(0)), np.zeros(0, dtype=np.int32))
     _current_source_func = None
+
+
+CAMBdata_new = camblib.__handles_MOD_cambdata_new
+CAMBdata_new.argtypes = [POINTER(POINTER(CAMBdata))]
+
+CAMBdata_free = camblib.__handles_MOD_cambdata_free
+CAMBdata_free.argtypes = [POINTER(POINTER(CAMBdata))]
+
+CAMBdata_getparams = camblib.__handles_MOD_cambdata_getparams
+CAMBdata_getparams.argtypes = [POINTER(CAMBdata), POINTER(POINTER(model.CAMBparams))]
+
+CAMBdata_setparams = camblib.__handles_MOD_cambdata_setparams
+CAMBdata_setparams.argtypes = [POINTER(CAMBdata), POINTER(model.CAMBparams)]
+
+CAMBdata_gettransfers = camblib.__handles_MOD_cambdata_gettransfers
+CAMBdata_gettransfers.argtypes = [POINTER(CAMBdata), POINTER(model.CAMBparams),
+                                  POINTER(c_bool)]
+CAMBdata_gettransfers.restype = c_int
+
+CAMBdata_transferstopowers = camblib.__camb_MOD_camb_transferstopowers
+CAMBdata_transferstopowers.argtypes = [POINTER(CAMBdata)]
+
+CAMBdata_mattertransferdata = camblib.__handles_MOD_cambdata_mattertransferdata
+CAMBdata_mattertransferdata.argtypes = [POINTER(CAMBdata), POINTER(_MatterTransferData)]
+
+CAMBdata_cltransferdata = camblib.__handles_MOD_cambdata_cltransferdata
+CAMBdata_cltransferdata.argtypes = [POINTER(CAMBdata), POINTER(_ClTransferData), int_arg]
+
+CAMB_SetParamsForBackground = camblib.__handles_MOD_cambdata_setparamsforbackground
+CAMB_SetParamsForBackground.argtypes = [POINTER(CAMBdata), POINTER(model.CAMBparams)]
+
+CAMB_CalcBackgroundTheory = camblib.__handles_MOD_cambdata_calcbackgroundtheory
+CAMB_CalcBackgroundTheory.argtypes = [POINTER(CAMBdata), POINTER(model.CAMBparams)]
+CAMB_CalcBackgroundTheory.restype = c_int
+
+CAMBdata_GetLinearMatterPower = camblib.__handles_MOD_cambdata_getlinearmatterpower
+CAMBdata_GetLinearMatterPower.argtypes = [POINTER(CAMBdata), numpy_2d, int_arg, int_arg, int_arg]
+
+CAMBdata_GetNonLinearMatterPower = camblib.__handles_MOD_cambdata_getnonlinearmatterpower
+CAMBdata_GetNonLinearMatterPower.argtypes = [POINTER(CAMBdata), numpy_2d, int_arg, int_arg, int_arg]
+
+CAMBdata_GetMatterPower = camblib.__handles_MOD_cambdata_getmatterpower
+CAMBdata_GetMatterPower.argtypes = [POINTER(CAMBdata), numpy_2d,
+                                    d_arg, d_arg, int_arg, int_arg, int_arg]

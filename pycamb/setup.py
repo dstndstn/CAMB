@@ -16,8 +16,6 @@ try:
 except ImportError:
     from distutils.core import setup
 
-package_name = 'camb'
-
 is_windows = platform.system() == "Windows"
 if is_windows:
     DLLNAME = 'cambdll.dll'
@@ -29,7 +27,7 @@ os.chdir(file_dir)
 
 is32Bit = struct.calcsize("P") == 4
 
-gfortran_min = '4.9'
+gfortran_min = '6'
 
 
 def get_long_description():
@@ -56,9 +54,13 @@ def check_gfortran(version=gfortran_min, msg=True, exit=False, import_fail_ok=Tr
             pass
     else:
         ok = False
+    if ok and is_windows:
+        version_str = str(subprocess.check_output("gfortran -dumpmachine", shell=True))
+        ok = is32Bit and 'i686' in version_str or not is32Bit and 'x86_64' in version_str
     if not ok and msg:
         try:
-            ifort = subprocess.check_output("ifort -v", shell=True)
+            with open(os.devnull, 'w') as devnull:
+                ifort = subprocess.check_output("ifort -v", shell=True, stderr=devnull)
         except:
             ifort = False
         if not ifort:
@@ -72,7 +74,7 @@ def check_gfortran(version=gfortran_min, msg=True, exit=False, import_fail_ok=Tr
 
 
 def find_version():
-    version_file = io.open(os.path.join(file_dir, '%s/__init__.py' % package_name)).read()
+    version_file = io.open(os.path.join(file_dir, 'camb', '__init__.py')).read()
     version_match = re.search(r"^__version__ = ['\"]([^'\"]*)['\"]", version_file, re.M)
     if version_match:
         version = version_match.group(1)
@@ -81,6 +83,27 @@ def find_version():
             version += '.' + commit
         return version
     raise RuntimeError("Unable to find version string.")
+
+
+def get_forutils():
+    fpath = os.getenv('FORUTILSPATH')
+    if not fpath:
+        dirs = ['.', '..', '../..']
+        for dir in dirs:
+            path = os.path.join(dir, 'forutils')
+            if os.path.isdir(path):
+                fpath = path
+                break
+        if not fpath:
+            try:
+                print('forutils not found, attempting to install using git')
+                if subprocess.call("git clone --depth=1 https://github.com/cmbant/forutils", shell=True) == 0:
+                    fpath = os.path.join('.', 'forutils')
+            except Exception:
+                print('Failed to install using git')
+    if not path:
+        raise Exception('Install forutils from https://github.com/cmbant/forutils; or set FORUTILSPATH variable')
+    return fpath
 
 
 class SharedLibrary(build, object):
@@ -94,7 +117,14 @@ class SharedLibrary(build, object):
         else:
             pycamb_path = 'pycamb'
         os.chdir(CAMBDIR)
-        ok, gfortran_version = check_gfortran(msg=not is_windows)
+        ifort = None
+        if not is_windows:
+            try:
+                ifort = str(subprocess.check_output("ifort -v", shell=True))
+            except Exception:
+                pass
+        if not ifort:
+            ok, gfortran_version = check_gfortran(msg=not is_windows)
         if is_windows:
             COMPILER = "gfortran"
             # note that TDM-GCC MingW 5.1 does not work due go general fortran bug.
@@ -102,10 +132,6 @@ class SharedLibrary(build, object):
             # but need to use 32bit compiler to build 32 bit dll (contrary to what is implied)
             FFLAGS = "-shared -static -cpp -fopenmp -O3 -ffast-math -fmax-errors=4"
             if is32Bit: FFLAGS = "-m32 " + FFLAGS
-            SOURCES = "constants.f90 utils.f90 subroutines.f90 inifile.f90 power_tilt.f90 recfast.f90 reionization.f90" \
-                      " modules.f90 bessels.f90 equations.f90 halofit_ppf.f90 lensing.f90 SeparableBispectrum.f90 cmbmain.f90" \
-                      " camb.f90 camb_python.f90"
-            OUTPUT = r"-o %s\camb\%s" % (pycamb_path, DLLNAME)
             scrs = os.listdir(os.getcwd())
             if not ok:
                 print(
@@ -117,8 +143,18 @@ class SharedLibrary(build, object):
                 subprocess.call(r'copy /Y %s\dlls\%s %s\camb\%s' % (
                     pycamb_path, ('cambdll_x64.dll', DLLNAME)[is32Bit], pycamb_path, DLLNAME), shell=True)
             else:
-                print(COMPILER + ' ' + FFLAGS + ' ' + SOURCES + ' ' + OUTPUT)
-                subprocess.call(COMPILER + ' ' + FFLAGS + ' ' + SOURCES + ' ' + OUTPUT, shell=True)
+                FORUTILS = "MiscUtils.f90 StringUtils.f90 ArrayUtils.f90 MpiUtils.f90 FileUtils.f90 " \
+                           "IniObjects.f90 RandUtils.f90 ObjectLists.f90 RangeUtils.f90 Interpolation.f90"
+                SOURCES = " constants.f90 classes.f90 subroutines.f90 power_tilt.f90 recfast.f90 reionization.f90 DarkEnergyInterface.f90  modules.f90" \
+                          " bessels.f90 equations.f90 DarkEnergyFluid.f90 DarkEnergyPPF.f90 halofit_ppf.f90 lensing.f90 SeparableBispectrum.f90" \
+                          " cmbmain.f90 camb.f90 camb_python.f90"
+                OUTPUT = r"-o %s\camb\%s" % (pycamb_path, DLLNAME)
+                fpath = get_forutils()
+                FORUTILS = " ".join([os.path.join(fpath, p) for p in FORUTILS.split()])
+                print('Compiling sources...')
+                cmd = COMPILER + ' ' + FFLAGS + ' ' + FORUTILS + ' ' + SOURCES + ' ' + OUTPUT
+                print(cmd)
+                subprocess.call(cmd, shell=True)
             subprocess.call(r"copy /Y HighLExtrapTemplate_lenspotentialCls.dat %s\camb" % pycamb_path, shell=True)
             scrs.append(DLLNAME)
             if not os.path.isfile(os.path.join(pycamb_path, 'camb', DLLNAME)): sys.exit('Compilation failed')
@@ -128,6 +164,7 @@ class SharedLibrary(build, object):
                 if not file in scrs:
                     os.remove(file)
         else:
+            get_forutils()
             print("Compiling source...")
             subprocess.call("make camblib.so PYCAMB_OUTPUT_DIR=%s/camb/ CLUSTER_SAFE=%d" %
                             (pycamb_path, int(self.cluster)), shell=True)
@@ -160,13 +197,14 @@ class CustomSdist(sdist):
 
     def run(self):
         if not os.path.exists('fortran'):
+            fpath = get_forutils()
             import shutil, glob
-            os.mkdir('fortran')
             try:
-                for file in glob.glob('..' + os.sep + '*.*90'):
-                    shutil.copy(file, 'fortran')
-                shutil.copy('..' + os.sep + 'Makefile', 'fortran')
-                shutil.copy('..' + os.sep + 'Makefile_main', 'fortran')
+                for dir, root in zip(['fortran', 'fortran/forutils'], ['..', fpath]):
+                    os.mkdir(dir)
+                    for pat in ['*.*90', 'Makefile*']:
+                        for file in glob.glob(os.path.join(root, pat)):
+                            shutil.copy(file, dir)
                 shutil.copy('..' + os.sep + 'HighLExtrapTemplate_lenspotentialCls.dat', 'fortran')
                 sdist.run(self)
             finally:
@@ -176,7 +214,7 @@ class CustomSdist(sdist):
 
 
 if __name__ == "__main__":
-    setup(name=package_name,
+    setup(name=os.getenv('CAMB_PACKAGE_NAME', 'camb'),
           version=find_version(),
           description='Code for Anisotropies in the Microwave Background',
           long_description=get_long_description(),

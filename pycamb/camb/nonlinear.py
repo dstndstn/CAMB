@@ -1,5 +1,5 @@
-from .baseconfig import dll_import
-from ctypes import c_int
+from .baseconfig import CAMB_Structure
+from ctypes import c_int, c_double
 
 # ---Parameters in halofit_ppf.f90
 
@@ -16,16 +16,21 @@ halofit_default = halofit_takahashi
 
 halofit_version_names = ['original', 'bird', 'peacock', 'takahashi', 'mead', 'halomodel', 'casarini', 'mead2015']
 
-halofit_version = dll_import(c_int, "nonlinear", "halofit_version")
 
+class NonLinearModel(CAMB_Structure):
+    _fields_ = [
+        ("Min_kh_nonlinear", c_double),
+        ("halofit_version", c_int)
+    ]
 
-# halofit_version.value = halofit_default
+    def get_halofit_version(self):
+        return halofit_version_names[self.halofit_version - 1]
 
-def set_halofit_version(version='takahashi'):
-    """
-    Set the halofit model for non-linear corrections.
+    def set_params(self, halofit_version='takahashi'):
+        """
+        Set the halofit model for non-linear corrections.
 
-    :param version: One of
+        :param version: One of
 
             - original: `astro-ph/0207664 <http://arxiv.org/abs/astro-ph/0207664>`_
             - bird: `arXiv:1109.4416 <http://arxiv.org/abs/1109.4416>`_
@@ -36,5 +41,5 @@ def set_halofit_version(version='takahashi'):
             - casarini: PKequal `arXiv:0810.0190 <http://arxiv.org/abs/0810.0190>`_, `arXiv:1601.07230 <http://arxiv.org/abs/1601.07230>`_
             - mead2015: original 2015 version of HMCode `arXiv:1505.07833 <http://arxiv.org/abs/1505.07833>`_
 
-    """
-    halofit_version.value = halofit_version_names.index(version) + 1
+        """
+        self.halofit_version = halofit_version_names.index(halofit_version) + 1

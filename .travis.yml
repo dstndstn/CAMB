@@ -8,7 +8,6 @@ branches:
   except:
     - CAMB_sources
     - rayleigh
-    
 matrix:
   include:
     - addons:
@@ -16,9 +15,9 @@ matrix:
           sources:
             - ubuntu-toolchain-r-test
           packages:
-            - gfortran-5
+            - gfortran-6
       env:
-        - GCC_VERSION="5"
+        - GCC_VERSION="6"
         - CHANNEL="defaults"
       python: "2.7"
     - addons:
@@ -32,11 +31,12 @@ matrix:
         - CHANNEL="conda-forge"
       python: "2.7"
          
+
 #before_install:
 #  - sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
 #  - sudo apt-get update -qq
-#  - sudo apt-get install -qq gfortran-5
-#  - sudo update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-5 90
+#  - sudo apt-get install -qq gfortran-6
+#  - sudo update-alternatives --install /usr/bin/gfortran gfortran /usr/bin/gfortran-6 90
   
 install:
   - mkdir -p gfortran-symlinks
@@ -54,6 +54,7 @@ install:
   - conda info -a
   - conda create -q -n py2-environment -c $CHANNEL python=2 numpy scipy sympy six;
   - conda create -q -n py3-environment -c $CHANNEL python=3 numpy scipy sympy six;
+  - git clone --depth=1 https://github.com/cmbant/forutils.git forutils
   - chmod +x tests/run_tests.sh
   
 script: tests/run_tests.sh

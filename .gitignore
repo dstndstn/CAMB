@@ -14,6 +14,7 @@ Release/
 *.asv
 *.u2d
 *.user
+*.save
 .DS_Store
 *egg*
 build

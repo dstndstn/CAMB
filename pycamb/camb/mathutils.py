@@ -26,7 +26,7 @@ def chi_squared(covinv, x):
     return _chi2(covinv, x, c_int(len(x)))
 
 
-_3j = camblib.__amlutils_MOD_getthreejs
+_3j = camblib.__getthreejs
 _3j.argtypes = [numpy_1d, int_arg, int_arg, int_arg, int_arg]
 
 

@@ -10,6 +10,7 @@
     use Reionization
     use Recombination
     use lensing
+    use DarkEnergyFluid
     implicit none
 
     Type CAMBdata
@@ -18,15 +19,13 @@
         Type (CAMBparams) :: Params
     end Type CAMBdata
 
-    !         public CAMB_GetTransfers, CAMB_GetResults, CAMB_GetCls, CAMB_SetDefParams, &
-    !                CAMB_ValidateParams, CAMB_GetAge,CAMB_InitCAMBdata,
     contains
 
     subroutine CAMB_GetTransfers(Params, OutData, error)
     use CAMBmain
     use lensing
     type(CAMBparams) :: Params
-    type (CAMBdata)  :: OutData
+    type(CAMBdata)  :: OutData
     integer :: error !Zero if OK
     Type(MatterTransferData) :: emptyMT
     Type(ClTransferData) :: emptyCl
@@ -60,11 +59,6 @@
     subroutine CAMB_InitCAMBdata(Dat)
     type (CAMBdata) :: Dat
 
-    !Comment these out to try to avoid intel bugs with status deallocating uninitialized pointers
-    call Ranges_Nullify(Dat%ClTransScal%q)
-    call Ranges_Nullify(Dat%ClTransVec%q)
-    call Ranges_Nullify(Dat%ClTransTens%q)
-
     nullify(Dat%ClTransScal%Delta_p_l_k)
     nullify(Dat%ClTransVec%Delta_p_l_k)
     nullify(Dat%ClTransTens%Delta_p_l_k)
@@ -90,14 +84,14 @@
     type (CAMBdata) :: CData
 
     CP = CData%Params
-    call InitializePowers(CP%InitPower,CP%curv)
+    call CP%InitPower%Init(CP%curv)
     if (global_error_flag/=0) return
     if (CData%Params%WantCls) then
         call ClTransferToCl(CData%ClTransScal,CData%ClTransTens, CData%ClTransvec)
         if (CP%DoLensing .and. global_error_flag==0) call lens_Cls
         if (global_error_flag/=0) return
     end if
-    if (CData%Params%WantTransfer) call Transfer_Get_sigmas(Cdata%MTrans)
+    if (CData%Params%WantTransfer) call Transfer_Get_sigmas(Cdata%MTrans, CP)
 
     end subroutine CAMB_TransfersToPowers
 
@@ -123,9 +117,7 @@
 
     if (Params%WantCls .and. Params%WantScalars) then
         P = Params
-        if (HighAccuracyDefault) then
-            P%Max_eta_k=max(min(P%max_l,3000)*2.5_dl,P%Max_eta_k)
-        end if
+        P%Max_eta_k=max(min(P%max_l,3000)*2.5_dl,P%Max_eta_k)
 
         if (separate) then
             P%WantTransfer = .false.
@@ -240,8 +232,8 @@
     !Return real (NOT double precision) arrays of the computed CMB  Cls
     !Output is l(l+1)C_l/2pi
     !If GC_Conventions = .false. use E-B conventions (as the rest of CAMB does)
-    subroutine CAMB_GetCls(Cls, lmax, in, GC_conventions)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_GetCls(Cls, lmax,GC_conventions)
+    integer, intent(IN) :: lmax
     logical, intent(IN) :: GC_conventions
     real, intent(OUT) :: Cls(2:lmax,1:4)
     integer l
@@ -250,14 +242,14 @@
     do l=2, lmax
         if (CP%WantScalars .and. l<= CP%Max_l) then
             if (CP%DoLensing) then
-                if (l<=lmax_lensed) Cls(l,1:4) = Cl_lensed(l, in, CT_Temp:CT_Cross)
+                if (l<=lmax_lensed) Cls(l,1:4) = Cl_lensed(l, CT_Temp:CT_Cross)
             else
-                Cls(l,1:2) = Cl_scalar(l, in,  C_Temp:C_E)
-                Cls(l,4) = Cl_scalar(l, in,  C_Cross)
+                Cls(l,1:2) = Cl_scalar(l, C_Temp:C_E)
+                Cls(l,4) = Cl_scalar(l, C_Cross)
             endif
         end if
         if (CP%WantTensors .and. l <= CP%Max_l_tensor) then
-            Cls(l,1:4) = Cls(l,1:4) + Cl_tensor(l, in,  CT_Temp:CT_Cross)
+            Cls(l,1:4) = Cls(l,1:4) + Cl_tensor(l, CT_Temp:CT_Cross)
         end if
     end do
     if (GC_conventions) then
@@ -305,6 +297,7 @@
     subroutine CAMB_SetDefParams(P)
     use Bispectrum
     use constants
+    use NonLinear
     type(CAMBparams), intent(out) :: P
 
     P%WantTransfer= .false.
@@ -323,12 +316,21 @@
     P%share_delta_neff = .false.
     P%Nu_mass_eigenstates = 0
     P%Nu_mass_numbers=0
+    P%Alens = 1
 
     P%Scalar_initial_condition =initial_adiabatic
     P%NonLinear = NonLinear_none
     P%Want_CMB = .true.
+    P%Want_CMB_lensing = .true.
 
-    call SetDefPowerParams(P%InitPower)
+    if (allocated(P%NonLinearModel)) deallocate(P%NonLinearModel)
+    allocate(THalofit::P%NonLinearModel)
+
+    if (allocated(P%DarkEnergy)) deallocate(P%DarkEnergy)
+    allocate(TDarkEnergyFluid::P%DarkEnergy)
+
+    if (allocated(P%InitPower)) deallocate(P%InitPower)
+    allocate(TInitialPowerLaw::P%InitPower)
 
     call Recombination_SetDefParams(P%Recomb)
 
@@ -357,13 +359,9 @@
     !JD 08/13 CAMB Fix for for nonlinear lensing of CMB + MPK compatibility
     P%Transfer%PK_num_redshifts=1
     P%Transfer%PK_redshifts=0
-    P%Transfer%NLL_num_redshifts=0
+    P%Transfer%NLL_num_redshifts=0 !AL 11/13, def to zero
     P%Transfer%NLL_redshifts=0
     !End JD
-
-    P%AccuratePolarization = .true.
-    P%AccurateReionization = .false.
-    P%AccurateBB = .false.
 
     P%DoLensing = .true.
 

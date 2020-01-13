@@ -3,6 +3,25 @@
 #Set FISHER=Y to compile bispectrum fisher matrix code
 FISHER=
 
+#Set FORUTILSPATH to the path where the libforutils.a file can be found.
+#The OUTPUT_DIR will be appended.
+
+ifneq "$(wildcard ./forutils)" ""
+FORUTILSPATH ?= $(shell pwd)/forutils
+else
+ifneq "$(wildcard ../forutils)" ""
+FORUTILSPATH ?= $(shell pwd)/../forutils
+else
+ifneq "$(wildcard ../../forutils)" ""
+FORUTILSPATH ?= $(shell pwd)/../../forutils
+endif
+endif
+endif
+
+ifeq ($(FORUTILSPATH),)
+$(error First install forutils from https://github.com/cmbant/forutils; or set FORUTILSPATH variable)
+endif
+
 #native optimization does not work on Mac gfortran or heterogeneous clusters
 CLUSTER_SAFE ?= 0
 ifneq ($(CLUSTER_SAFE), 0)
@@ -11,16 +30,26 @@ endif
 
 #Will detect ifort/gfortran or edit for your compiler
 ifneq ($(COMPILER),gfortran)
-ifortErr = $(shell which ifort >/dev/null; echo $$?)
+ifortErr = $(shell which ifort >/dev/null 2>&1; echo $$?)
 else
 ifortErr = 1
 endif
+
 ifeq "$(ifortErr)" "0"
 
 #Intel compiler
 F90C     = ifort
-FFLAGS = -W0 -WB -fpp
-DEBUGFLAGS = -g -check all -check noarg_temp_created -traceback -fpp -fpe0
+
+ifortVer_major = $(shell ifort -v 2>&1 | cut -d " " -f 3 | cut -d. -f 1)
+ifeq ($(shell test $(ifortVer_major) -gt 15; echo $$?),0)
+COMMON_FFLAGS = -fpp -qopenmp
+else
+COMMON_FFLAGS = -fpp -openmp
+endif
+COMMON_FFLAGS += -gen-dep=$$*.d
+
+FFLAGS = -fp-model precise -W0 -WB $(COMMON_FFLAGS)
+DEBUGFLAGS =  -g -check all -check noarg_temp_created -traceback -fpe0 $(COMMON_FFLAGS)
 
 ifeq ($(shell uname -s),Darwin)
 SFFLAGS = -dynamiclib -fpic
@@ -34,18 +63,15 @@ else
 FFLAGS+=
 endif
 
-ifortVer_major = $(shell ifort -v 2>&1 | cut -d " " -f 3 | cut -d. -f 1)
-ifeq ($(shell test $(ifortVer_major) -gt 15; echo $$?),0)
-FFLAGS+= -qopenmp
-DEBUGFLAGS+= -qopenmp
-else
-FFLAGS+= -openmp -vec_report0
-DEBUGFLAGS+= -openmp
-endif
-
 ## This is flag is passed to the Fortran compiler allowing it to link C++ if required (not usually):
 F90CRLINK = -cxxlib
+ifneq "$(ifortVer_major)" "14"
+F90CRLINK += -qopt-report=1 -qopt-report-phase=vec
+else
+F90CRLINK += -vec_report0
+endif
 MODOUT = -module $(OUTPUT_DIR)
+AR     = xiar
 SMODOUT = -module $(DLL_DIR)
 ifneq ($(FISHER),)
 FFLAGS += -mkl
@@ -54,16 +80,20 @@ endif
 else
 gfortErr = $(shell which gfortran >/dev/null; echo $$?)
 ifeq "$(gfortErr)" "0"
+#Gfortran compiler (version 6+):
 COMPILER = gfortran
-#Gfortran compiler:
-#The options here work in v4.6+. Python wrapper needs v4.9+.
 F90C     = gfortran
+COMMON_FFLAGS = -MMD -cpp -ffree-line-length-none -fmax-errors=4
+# Using -ffast-math causes differences between Debug and Release configurations.
+FFLAGS = -O3 -fopenmp $(COMMON_FFLAGS)
+DEBUGFLAGS = -g -fbacktrace -ffpe-trap=invalid,overflow,zero -fbounds-check $(COMMON_FFLAGS)
 SFFLAGS =  -shared -fPIC
-
-FFLAGS =  -O3 -fopenmp -ffast-math -fmax-errors=4
-DEBUGFLAGS = -cpp -g -fbounds-check -fbacktrace -ffree-line-length-none -fmax-errors=4 -ffpe-trap=invalid,overflow,zero
 MODOUT =  -J$(OUTPUT_DIR)
 SMODOUT = -J$(DLL_DIR)
+
+ifneq ($(FISHER),)
+F90CRLINK += -lblas -llapack
+endif
 
 ifeq ($(shell uname -s),Darwin)
 NONNATIVE = 1
@@ -122,13 +152,11 @@ FITSLIB       = cfitsio
 HEALPIXDIR    ?= /usr/local/healpix
 
 ifneq ($(FISHER),)
+# Its dependencies are all meet by the libutils.a which always added.
 FFLAGS += -DFISHER
-EXTCAMBFILES = $(OUTPUT_DIR)/Matrix_utils.o
-else
-EXTCAMBFILES =
 endif
 
-DEBUGFLAGS ?= FFLAGS
-Debug: FFLAGS=$(DEBUGFLAGS)
+DEBUGFLAGS ?= $(FFLAGS)
+Debug: FFLAGS = $(DEBUGFLAGS)
 
 include ./Makefile_main

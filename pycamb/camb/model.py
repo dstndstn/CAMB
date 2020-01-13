@@ -1,14 +1,15 @@
-from .baseconfig import camblib, CAMB_Structure, CAMBError, CAMBParamRangeError, dll_import
-from ctypes import c_bool, c_int, c_double, c_float, byref, POINTER
+from .baseconfig import camblib, CAMB_Structure, CAMBError, CAMBValueError, CAMBParamRangeError, \
+    dll_import, f_allocatable
+from ctypes import c_bool, c_int, c_double, byref, POINTER
 from . import reionization as ion
 from . import recombination as recomb
-from . import initialpower as ipow
 from . import constants
+from .nonlinear import NonLinearModel
+from .initialpower import InitialPower, SplinedInitialPower
 import numpy as np
 from . import bbn
-import logging
+import ctypes
 import six
-import copy
 
 # ---Parameters
 
@@ -46,6 +47,8 @@ evolve_names = transfer_names + ['a', 'etak', 'H', 'growth', 'v_photon', 'pi_pho
 
 background_names = ['x_e', 'opacity', 'visibility', 'cs2b', 'T_b']
 
+dark_energy_models = ['fluid', 'ppf']
+
 neutrino_hierarchies = ['normal', 'inverted', 'degenerate']
 neutrino_hierarchy_normal = 1
 neutrino_hierarchy_inverted = 2
@@ -55,15 +58,6 @@ neutrino_hierarchy_degenerate = 3
 # To set the value please just put
 # variable_name.value = new_value
 
-
-# logical
-_HighAccuracyDefault = dll_import(POINTER(c_bool), "modelparams", "highaccuracydefault")
-_HighAccuracyDefault.value = True
-
-_lSampleBoost = dll_import(c_double, "modelparams", "lsampleboost")
-_AccuracyBoost = dll_import(c_double, "modelparams", "accuracyboost")
-_lAccuracyBoost = dll_import(c_float, "modelparams", "laccuracyboost")
-_DoLateRadTruncation = dll_import(c_bool, "gaugeinterface", "dolateradtruncation")
 
 DebugParam = dll_import(c_double, "modelparams", "debugparam")
 # DebugParam.value = 1000000*2
@@ -158,6 +152,16 @@ numpy_1d = np.ctypeslib.ndpointer(c_double, flags='C_CONTIGUOUS')
 CAMB_primordialpower = camblib.__handles_MOD_camb_primordialpower
 CAMB_primordialpower.restype = c_bool
 
+CAMBparams_SetDarkEnergy = camblib.__handles_MOD_cambparams_setdarkenergy
+CAMBparams_GetAllocatables = camblib.__handles_MOD_cambparams_getallocatables
+CAMBparams_SetEqual = camblib.__handles_MOD_cambparams_setequal
+
+CAMBparams_DE_SetTable = camblib.__handles_MOD_cambparams_setdarkenergytable
+CAMBparams_DE_GetStressEnergy = camblib.__handles_MOD_cambparams_darkenergystressenergy
+
+CAMBparams_SetPKTable = camblib.__handles_MOD_cambparams_setpktable
+CAMBParams_Free = camblib.__handles_MOD_cambparams_free
+
 
 class TransferParams(CAMB_Structure):
     """
@@ -165,6 +169,7 @@ class TransferParams(CAMB_Structure):
     Other entries are used internally, e.g. for sampling to get correct non-linear corrections and lensing.
 
     :ivar high_precision: True for more accuracy
+    :ivar accurate_massive_neutrinos: True if you want neutrino transfer functions accurate (false by default)
     :ivar kmax: k_max to output
     :ivar k_per_logint: number of points per log k interval. If zero, set an irregular optimized spacing.
     :ivar PK_num_redshifts: number of redshifts to calculate
@@ -187,6 +192,79 @@ class TransferParams(CAMB_Structure):
     ]
 
 
+class DarkEnergyParams(CAMB_Structure):
+    """
+    Object storing dark energy parameters. Set w and wa to use w(a) = w + (1-a)*wa parameterization,
+    or call set_w_a_table to set another tabulated w(a). If tabulated w(a) is used, w and wa are set
+    to approximate values at z=0.
+
+    :ivar w: equation of state parameter at z=0
+    :ivar wa: evolution of w, using default parameterization with  w(a) = w + (1-a)*wa
+    :ivar cs2: rest-frame sound speed of dark energy perturbations
+    :ivar use_tabulated_w: if using an explicitly set w(a) function rather than default w + (1-a)*wa
+
+    """
+    _fields_ = [
+        ("w", c_double),
+        ("wa", c_double),
+        ("cs2", c_double),
+        ("use_tabulated_w", c_int),
+        ("no_perturbations", c_int)
+    ]
+
+    def set_w_a_table(self, a, w):
+        """
+        Set w(a) from numerical values (used as cublic spline)
+
+        :param a: array of scale factors
+        :param w: array of w(a)
+        :return: self
+        """
+        if len(a) != len(w): raise ValueError('Dark energy w(a) table non-equal sized arrays')
+        if not np.isclose(a[-1], 1):  raise ValueError('Dark energy w(a) arrays must end at a=1')
+        CAMBparams_DE_SetTable(byref(self), a, w, byref(c_int(len(a))))
+        return self
+
+    def get_rho_w(self, a):
+        """
+        get dark energy density in units of the dark energy density today, and w=P/rho
+        :param a: scalar factor or array of scale factors
+        :return: rho, w arrays at redshifts 1/a-1 [or scalars if a is scalar]
+        """
+        if np.isscalar(a):
+            scales = np.array([a])
+        else:
+            scales = np.asarray(a)
+        rho = np.zeros(scales.shape)
+        w = np.zeros(scales.shape)
+        CAMBparams_DE_GetStressEnergy(byref(self), scales, rho, w, byref(c_int(len(scales))))
+        if np.isscalar(a):
+            return rho[0], w[0]
+        else:
+            return rho, w
+
+
+class AccuracyParams(CAMB_Structure):
+    _fields_ = [
+        ("lSampleBoost", c_double),
+        ("AccuracyBoost", c_double),
+        ("lAccuracyBoost", c_double),
+        ("AccuratePolarization", c_int),  # logical
+        ("AccurateBB", c_int),  # logical
+        ("AccurateReionization", c_int),  # logical
+        ("TimeStepBoost", c_double),
+        ("IntTolBoost", c_double),
+        ("SourcekAccuracyBoost", c_double),
+        ("IntkAccuracyBoost", c_double),
+        ("TransferkBoost", c_double),
+        ("NonFlatIntAccuracyBoost", c_double),
+        ("BessIntBoost", c_double),
+        ("BesselBoost", c_double),
+        ("LimberBoost", c_double),
+        ("Kmax_Boost", c_double)
+    ]
+
+
 class CAMBparams(CAMB_Structure):
     """
     Object storing the parameters for a CAMB calculation, including cosmological parameters and
@@ -202,9 +280,24 @@ class CAMBparams(CAMB_Structure):
 
     def __init__(self):
         getattr(camblib, '__camb_MOD_camb_setdefparams')(byref(self))
-        if _HighAccuracyDefault.value:
-            self.AccurateReionization = True
+        self._set_allocatables()
         self.InitPower.set_params()
+
+    def _set_allocatables(self):
+        de = POINTER(DarkEnergyParams)()
+        nonlin = POINTER(NonLinearModel)()
+        initpower = ctypes.c_void_p()
+
+        i = c_int(0)
+        j = c_int(0)
+        CAMBparams_GetAllocatables(byref(self), byref(i), byref(de), byref(nonlin), byref(j), byref(initpower))
+        self.DarkEnergy = de.contents
+        self.NonLinearModel = nonlin.contents
+        self.InitPower = InitialPower.void_contents(initpower, j.value)
+
+    def __del__(self):
+        if self._b_needsfree_:
+            CAMBParams_Free(byref(self))
 
     _fields_ = [
         ("WantCls", c_int),  # logical
@@ -218,6 +311,7 @@ class CAMBparams(CAMB_Structure):
         ("PK_WantTransfer", c_int),  # logical
         ("NonLinear", c_int),
         ("Want_CMB", c_int),  # logical
+        ("Want_CMB_lensing", c_int),  # logical
         ("max_l", c_int),
         ("max_l_tensor", c_int),
         ("max_eta_k", c_double),
@@ -238,36 +332,44 @@ class CAMBparams(CAMB_Structure):
         ("nu_mass_numbers", c_int * max_nu),
         ("scalar_initial_condition", c_int),
         ("OutputNormalization", c_int),
-        ("AccuratePolarization", c_int),  # logical
-        ("AccurateBB", c_int),  # logical
-        ("AccurateReionization", c_int),  # logical
+        ("Alens", c_double),
         ("MassiveNuMethod", c_int),
-        ("InitPower", ipow.InitialPowerParams),
         ("Reion", ion.ReionizationParams),
         ("Recomb", recomb.RecombinationParams),
         ("Transfer", TransferParams),
+        ("Accuracy", AccuracyParams),
+        ("DoLateRadTruncation", c_int),
+        ("Evolve_baryon_cs", c_int),
+        ("Evolve_delta_xe", c_int),
+        ("Evolve_delta_Ts", c_int),
         ("InitialConditionVector", c_double * 10),
         ("OnlyTransfers", c_int),  # logical
         ("DerivedParameters", c_int),  # logical
-        ("ReionHist", ion.ReionizationHistory),
-        ("flat", c_int),  # logical
-        ("closed", c_int),  # logical
-        ("open", c_int),  # logical
-        ("omegak", c_double),
-        ("curv", c_double),
-        ("r", c_double),
-        ("Ksign", c_double),
-        ("tau0", c_double),
-        ("chi0", c_double)
+        ("_InitPower", f_allocatable),  # resolved class accessed as self.InitPower
+        ("_DarkEnergy", f_allocatable),  # resolved class accessed as self.DarkEnergy
+        ("_NonLinearModel", f_allocatable),  # resolved class accessed as self.NonLinearModel
+        ("__ReionHist", ion.ReionizationHistory),
+        ("__flat", c_int),  # logical
+        ("__closed", c_int),  # logical
+        ("__open", c_int),  # logical
+        ("__omegak", c_double),
+        ("__curv", c_double),
+        ("__r", c_double),
+        ("__Ksign", c_double),
+        ("__tau0", c_double),
+        ("__chi0", c_double)
     ]
 
     def copy(self):
         """
-        Make independent copy.
+        Make independent copy. Since it contains allocatables, these have to be newly allocated.
 
-         :return: copy of self
+        :return: copy of self
         """
-        return copy.deepcopy(self)
+        cp = CAMBparams()
+        CAMBparams_SetEqual(byref(cp), byref(self))
+        cp._set_allocatables()
+        return cp
 
     def validate(self):
         """
@@ -277,8 +379,7 @@ class CAMBparams(CAMB_Structure):
         """
         return CAMB_validateparams(byref(self))
 
-    def set_accuracy(self, AccuracyBoost=1., lSampleBoost=1., lAccuracyBoost=1.,
-                     HighAccuracyDefault=True, DoLateRadTruncation=True):
+    def set_accuracy(self, AccuracyBoost=1., lSampleBoost=1., lAccuracyBoost=1., DoLateRadTruncation=True):
         """
         Set parameters determining calculation accuracy (large values may give big slow down).
         Note curently these are set globally, not just per parameter set.
@@ -286,50 +387,107 @@ class CAMBparams(CAMB_Structure):
         :param AccuracyBoost: increase AccuracyBoost to decrease integration step size, increase density of k sampling, etc.
         :param lSampleBoost: increase lSampleBoost to increase density of L sampling for CMB
         :param lAccuracyBoost: increase lAccuracyBoost to increase the maximum L included in the Boltzmann hierarchies
-        :param HighAccuracyDefault: True for Planck-level accuracy (False is WMAP)
         :param DoLateRadTruncation: If True, use approximation to radiation perturbation evolution at late times
         :return: self
         """
-        _lSampleBoost.value = lSampleBoost
-        _AccuracyBoost.value = AccuracyBoost
-        _lAccuracyBoost.value = lAccuracyBoost
-        _HighAccuracyDefault.value = HighAccuracyDefault
-        _DoLateRadTruncation.value = DoLateRadTruncation
-        logging.warning('accuracy parameters are changed globally, not yet per parameter set')
+        self.Accuracy.lSampleBoost = lSampleBoost
+        self.Accuracy.AccuracyBoost = AccuracyBoost
+        self.Accuracy.lAccuracyBoost = lAccuracyBoost
+        self.DoLateRadTruncation = DoLateRadTruncation
+        return self
+
+    def set_initial_power_function(self, P_scalar, P_tensor=None, kmin=1e-6, kmax=100., N_min=200, rtol=5e-5, args=()):
+        """
+        Set the initial power spectrum from a function P_scalar(k, *args), and optionally also the tensor spectrum.
+        The function is called to make a pre-computed array which is then interpolated inside CAMB. The sampling in k
+        is set automatically so that the spline is accurate, but you may also need to increase other accuracy parameters.
+
+        :param P_scalar: function returning normalized initial scalar curvature power as function of k (in Mpc^{-1})
+        :param P_tensor: optional function returning normalized initial tensor power spectrum
+        :param kmin: minimum wavenumber to compute
+        :param kmax: maximum wavenumber to compute
+        :param N_min: minimum number of spline points for the pre-computation
+        :param rtol: relative tolerance for deciding how many points are enough
+        :param args: optional list of arguments passed to P_scalar (and P_tensor)
+        :return: self
+        """
+
+        from scipy.interpolate import UnivariateSpline
+        assert N_min > 7
+        assert kmin < kmax
+        # sample function logspace, finely enough that it interpolates accurately
+        N = N_min
+        ktest = np.logspace(np.log10(kmin), np.log10(kmax), N // 2)
+        PK_test = P_scalar(ktest, *args)
+        while True:
+            ks = np.logspace(np.log10(kmin), np.log10(kmax), N)
+            PK_compare = UnivariateSpline(ktest, PK_test, s=0)(ks)
+            PK = P_scalar(ks, *args)
+            if np.allclose(PK, PK_compare, atol=np.max(PK) * 1e-6, rtol=rtol):
+                break
+            N *= 2
+            PK_test = PK
+            ktest = ks
+        PK_t = None if P_tensor is None else P_tensor(ks, *args)
+        self.set_initial_power_table(ks, PK, PK_t)
+        return self
+
+    def set_initial_power_table(self, k, pk=None, pk_tensor=None):
+        """
+        Set a general intial power spectrum from tabulated values. It's up to you to ensure the sampling
+        of the k values is high enough that it can be interpolated accurately.
+
+        :param k: array of k values (Mpc^{-1})
+        :param pk: array of primordial curvature perturbation power spectrum values P(k_i)
+        param pk_tensor: array of tensor spectrum values
+        """
+        initpower = POINTER(SplinedInitialPower)()
+        if pk is None:
+            pk = np.asarray([])
+        elif len(k) != len(pk):
+            raise CAMBValueError("k and P(k) arrays must be same size")
+        if pk_tensor is None:
+            pk_tensor = np.asarray([])
+        elif len(k) != len(pk_tensor):
+            raise CAMBValueError("k and P_tensor(k) arrays must be same size")
+        CAMBparams_SetPKTable(byref(self), byref(c_int(len(pk))), byref(c_int(len(pk_tensor))), k, pk, pk_tensor,
+                              byref(initpower))
+        self.InitPower = initpower.contents
         return self
 
     def set_initial_power(self, initial_power_params):
         """
         Set the InitialPower primordial power spectrum parameters
 
-        :param initial_power_params: :class:`.initialpower.InitialPowerParams` instance
+        :param initial_power_params: :class:`.initialpower.InitialPowerLaw` or :class:`.initialpower.SplinedInitialPower`instance
         :return: self
         """
-        assert (isinstance(initial_power_params, ipow.InitialPowerParams))
-        CAMB_setinitialpower(byref(self), byref(initial_power_params))
+        assert isinstance(initial_power_params, InitialPower)
+        p, class_id = initial_power_params._pointer_id()
+        CAMB_setinitialpower(byref(self), byref(p), byref(c_int(class_id)))
+        self._set_allocatables()
         return self
 
     def set_cosmology(self, H0=67.0, cosmomc_theta=None, ombh2=0.022, omch2=0.12, omk=0.0,
                       neutrino_hierarchy='degenerate', num_massive_neutrinos=1,
                       mnu=0.06, nnu=3.046, YHe=None, meffsterile=0.0, standard_neutrino_neff=3.046,
-                      TCMB=constants.COBE_CMBTemp, tau=None, deltazrei=None, bbn_predictor=None,
-                      theta_H0_range=[10, 100]):
-        """
+                      TCMB=constants.COBE_CMBTemp, tau=None, deltazrei=None, Alens=1.0,
+                      bbn_predictor=None, theta_H0_range=[10, 100]):
+        r"""
         Sets cosmological parameters in terms of physical densities and parameters used in Planck 2015 analysis.
         Default settings give a single distinct neutrino mass eigenstate, by default one neutrino with mnu = 0.06eV.
         Set the neutrino_hierarchy parameter to normal or inverted to use a two-eigenstate model that is a good
         approximation to the known mass splittings seen in oscillation measurements.
-        If you require more fine-grained control you can set the neutrino parameters directly rather than using this function.
+        If you require more fine-grained control can set the neutrino parameters directly rather than using this function.
 
-        :param H0: Hubble parameter (in km/s/Mpc)
-        :param cosmomc_theta: The CosmoMC theta parameter. You must set H0=None to solve for H0 given cosmomc_theta. Note that
+        :param cosmomc_theta: The CosmoMC theta parameter :math:`\theta_{\rm MC}`. You must set H0=None to solve for H0 given cosmomc_theta. Note that
                 you must have already set the dark energy model, you can't use set_cosmology with cosmomc_theta and then
                 change the background evolution (which would change cosmomc_theta at the calculated H0 value).
         :param ombh2: physical density in baryons
         :param omch2:  physical density in cold dark matter
         :param omk: Omega_K curvature parameter
         :param neutrino_hierarchy: 'degenerate', 'normal', or 'inverted' (1 or 2 eigenstate approximation)
-        :param num_massive_neutrinos:  number of massive neutrinos (ignored unless hierarchy == 'degenerate')
+        :param num_massive_neutrinos:  number of massive neutrinos
         :param mnu: sum of neutrino masses (in eV)
         :param nnu: N_eff, effective relativistic degrees of freedom
         :param YHe: Helium mass fraction. If None, set from BBN consistency.
@@ -339,6 +497,7 @@ class CAMBparams(CAMB_Structure):
         :param TCMB: CMB temperature (in Kelvin)
         :param tau: optical depth; if None, current Reion settings are not changed
         :param deltazrei: redshift width of reionization; if None, uses default
+        :param Alens: (non-physical) scaling of the lensing potential compared to prediction
         :param bbn_predictor: :class:`.bbn.BBNPredictor` instance used to get YHe from BBN consistency if YHe is None
         :param theta_H0_range: if cosmomc_theta is specified, the min, max interval of H0 values to map to; outside this range
                  it will raise an exception.
@@ -383,6 +542,7 @@ class CAMBparams(CAMB_Structure):
         fac = (self.H0 / 100.0) ** 2
         self.omegab = ombh2 / fac
         self.omegac = omch2 / fac
+        self.Alens = Alens
 
         neutrino_mass_fac = 94.07
         # conversion factor for thermal with Neff=3 TCMB=2.7255
@@ -447,26 +607,45 @@ class CAMBparams(CAMB_Structure):
 
         return self
 
-    def set_dark_energy(self, w=-1.0, sound_speed=1.0, dark_energy_model='fluid'):
+    def set_dark_energy(self, w=-1.0, cs2=1.0, wa=0, dark_energy_model='fluid'):
         r"""
-        Set dark energy parameters. Not that in this version these are not actually stored in
-        the CAMBparams variable but set globally. So be careful!
+        Set dark energy parameters (use set_dark_energy_w_a to set w(a) from numerical table instead)
 
         :param w: :math:`w\equiv p_{\rm de}/\rho_{\rm de}`, assumed constant
-        :param sound_speed: rest-frame sound speed of dark energy fluid
-        :param dark_energy_model: model to use, default is 'fluid'
+        :param wa: evolution of w (for dark_energy_model=ppf)
+        :param cs2: rest-frame sound speed squared of dark energy fluid
+        :param dark_energy_model: model to use ('fluid' or 'ppf'), default is 'fluid'
         :return: self
         """
-        # Variables from module LambdaGeneral
-        if dark_energy_model != 'fluid':
-            raise CAMBError('This version only supports the fluid energy model')
-        if w != -1 or sound_speed != 1:
-            logging.warning('Currently dark energy parameters are changed globally, not per parameter set')
-        w_lam = dll_import(c_double, "lambdageneral", "w_lam")
-        w_lam.value = w
-        cs2_lam = dll_import(c_double, "lambdageneral", "cs2_lam")
-        cs2_lam.value = sound_speed
+
+        if dark_energy_model == 'fluid' and wa and (w < -1 - 1e-6 or 1 + w + wa < -1 - 1e-6):
+            raise CAMBError('fluid dark energy model does not support w crossing -1')
+
+        de = POINTER(DarkEnergyParams)()
+        CAMBparams_SetDarkEnergy(byref(self), byref(c_int(dark_energy_models.index(dark_energy_model))), byref(de))
+        self.DarkEnergy = de.contents
+        self.DarkEnergy.w = w
+        self.DarkEnergy.wa = wa
+        self.DarkEnergy.cs2 = cs2
+        self.DarkEnergy.use_tabulated_w = False
+
         return self
+
+    def set_dark_energy_w_a(self, a, w, dark_energy_model='fluid'):
+        """
+        Set the dark energy equation of state from tabulated values (which are cubic spline interpolated).
+
+        :param a: array of sampled a = 1/(1+z) values
+        :param w: array of w(a)
+        :param dark_energy_model:  model to use ('fluid' or 'ppf'), default is 'fluid'
+        :return: self
+        """
+        if dark_energy_model == 'fluid' and np.any(w < -1):
+            raise CAMBError('fluid dark energy model does not support w crossing -1')
+        de = POINTER(DarkEnergyParams)()
+        CAMBparams_SetDarkEnergy(byref(self), byref(c_int(dark_energy_models.index(dark_energy_model))), byref(de))
+        self.DarkEnergy = de.contents
+        self.DarkEnergy.set_w_a_table(a, w)
 
     def get_omega_k(self):
         r"""
@@ -638,6 +817,24 @@ def Transfer_SortAndIndexRedshifts(P):
 
 
 CAMB_primordialpower.argtypes = [POINTER(CAMBparams), numpy_1d, numpy_1d, POINTER(c_int), POINTER(c_int)]
+CAMBparams_SetDarkEnergy.argtypes = [POINTER(CAMBparams), POINTER(c_int), POINTER(POINTER(DarkEnergyParams))]
+CAMBparams_GetAllocatables.argtypes = CAMBparams_SetDarkEnergy.argtypes + [POINTER(POINTER(NonLinearModel))] + \
+                                      [POINTER(c_int), POINTER(ctypes.c_void_p)]
+CAMBparams_SetEqual.argtypes = [POINTER(CAMBparams), POINTER(CAMBparams)]
+
+CAMBparams_DE_SetTable.argtypes = [POINTER(DarkEnergyParams), numpy_1d, numpy_1d, POINTER(c_int)]
+
+CAMBparams_DE_GetStressEnergy.argtypes = [POINTER(DarkEnergyParams), numpy_1d, numpy_1d, numpy_1d, POINTER(c_int)]
+
+CAMBparams_SetPKTable.argtypes = [POINTER(CAMBparams), POINTER(c_int), POINTER(c_int), numpy_1d, numpy_1d, numpy_1d,
+                                  POINTER(POINTER(SplinedInitialPower))]
 
 CAMB_SetNeutrinoHierarchy.argtypes = [POINTER(CAMBparams), POINTER(c_double), POINTER(c_double),
                                       POINTER(c_double), POINTER(c_int), POINTER(c_int)]
+
+CAMBParams_Free.argtypes = [POINTER(CAMBparams)]
+
+CAMB_SetNeutrinoHierarchy.argtypes = [POINTER(CAMBparams), POINTER(c_double), POINTER(c_double),
+                                      POINTER(c_double), POINTER(c_int), POINTER(c_int)]
+
+CAMB_setinitialpower.argtypes = [POINTER(CAMBparams), POINTER(ctypes.c_void_p), POINTER(c_int)]

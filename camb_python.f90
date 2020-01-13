@@ -1,16 +1,19 @@
+
     module handles
     use CAMB
     use Precision
     use ModelParams
     use Transfer
     use iso_c_binding
+    use DarkEnergyFluid
+    use DarkEnergyPPF
     implicit none
 
     Type c_MatterTransferData
         integer   ::  num_q_trans   !    number of steps in k for transfer calculation
         type(c_ptr) :: q_trans, sigma_8, sigma2_vdelta_8, TransferData
-        integer :: sigma_8_size(2)
-        integer :: sigma2_vdelta_8_size(2)
+        integer :: sigma_8_size
+        integer :: sigma2_vdelta_8_size
         integer :: TransferData_size(3)
     end Type c_MatterTransferData
 
@@ -25,6 +28,12 @@
         type(c_ptr) ls
         !skip limber for now...
     end Type c_ClTransferData
+
+    Type dummyAllocatable
+        class(c_ClTransferData), allocatable :: P
+    end Type dummyAllocatable
+
+    private dummyAllocatable
 
     contains
 
@@ -120,8 +129,8 @@
     cData%sigma2_vdelta_8 = c_loc(data%MTrans%sigma2_vdelta_8)
     cData%TransferData = c_loc(data%MTrans%TransferData)
     cData%q_trans = c_loc(data%MTrans%q_trans)
-    cData%sigma_8_size = shape(data%MTrans%sigma_8)
-    cData%sigma2_vdelta_8_size = shape(data%MTrans%sigma2_vdelta_8)
+    cData%sigma_8_size = size(data%MTrans%sigma_8)
+    cData%sigma2_vdelta_8_size = size(data%MTrans%sigma2_vdelta_8)
     cData%TransferData_size = shape(data%MTrans%TransferData)
 
     end subroutine CAMBdata_MatterTransferData
@@ -148,7 +157,7 @@
     Type(c_ClTransferData) :: cData
 
     cData%NumSources = data%NumSources
-    if (associated(Data%q%points)) then
+    if (allocated(Data%q%points)) then
         cData%q_size = size(data%q%points)
         cData%q = c_loc(data%q%points)
     else
@@ -172,7 +181,7 @@
     integer, intent(in) :: var1, var2
     logical :: hubble_units
 
-    call Transfer_GetUnsplinedPower(data%MTrans, PK, var1, var2, hubble_units)
+    call Transfer_GetUnsplinedPower(data%MTrans, data%Params, PK, var1, var2, hubble_units)
 
     end subroutine CAMBdata_GetLinearMatterPower
 
@@ -182,7 +191,7 @@
     integer, intent(in) :: var1, var2
     logical :: hubble_units
 
-    call Transfer_GetUnsplinedNonlinearPower(data%MTrans, PK, var1, var2, hubble_units)
+    call Transfer_GetUnsplinedNonlinearPower(data%MTrans, data%Params,PK, var1, var2, hubble_units)
 
     end subroutine CAMBdata_GetNonLinearMatterPower
 
@@ -195,24 +204,36 @@
     integer i
 
     do i=1,data%Params%Transfer%PK_num_redshifts
-        call Transfer_GetMatterPowerD(data%MTrans,outpower(:,i), data%Params%Transfer%PK_num_redshifts-i+1, &
-            & 1, minkh, dlnkh, npoints, var1, var2)
+        call Transfer_GetMatterPowerD(data%MTrans, data%Params, outpower(:,i), data%Params%Transfer%PK_num_redshifts-i+1, &
+            & minkh, dlnkh, npoints, var1, var2)
     end do
 
     end subroutine CAMBdata_GetMatterPower
 
 
-    subroutine CAMB_setinitialpower(Params, P)
+    subroutine CAMB_setinitialpower(Params, cptr, cls)
     type(CAMBparams) :: Params
-    type(InitialPowerParams) :: P
+    type(c_ptr)  :: cptr
+    Type (TInitialPowerLaw), pointer :: pInitialPowerLaw
+    Type (TSplinedInitialPower), pointer :: pInitialSplined
+    integer, intent(in) :: cls
 
-    Params%InitPower = P
+    if (allocated(Params%InitPower)) deallocate(Params%InitPower)
+    if (cls==0) then
+        call c_f_pointer(cptr, pInitialPowerLaw)
+        allocate(Params%InitPower, source = pInitialPowerLaw)
+    elseif (cls==1) then
+        call c_f_pointer(cptr, pInitialSplined)
+        allocate(Params%InitPower, source = pInitialSplined)
+    else
+        call MpiStop('Unknown initial power')
+    end if
 
     end subroutine CAMB_setinitialpower
 
 
-    subroutine CAMB_SetTotCls(lmax, tot_scalar_Cls, in)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_SetTotCls(lmax, tot_scalar_Cls)
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: tot_scalar_cls(4, 0:lmax)
     integer l
 
@@ -220,103 +241,103 @@
     do l=lmin, lmax
         if (CP%WantScalars .and. l<= CP%Max_l) then
             if (CP%DoLensing) then
-                if (l<=lmax_lensed) tot_scalar_cls(1:4,l) = Cl_lensed(l, in, CT_Temp:CT_Cross)
+                if (l<=lmax_lensed) tot_scalar_cls(1:4,l) = Cl_lensed(l, CT_Temp:CT_Cross)
             else
-                tot_scalar_cls(1:2,l) = Cl_scalar(l, in,  C_Temp:C_E)
-                tot_scalar_cls(4,l) = Cl_scalar(l, in,  C_Cross)
+                tot_scalar_cls(1:2,l) = Cl_scalar(l,C_Temp:C_E)
+                tot_scalar_cls(4,l) = Cl_scalar(l, C_Cross)
             endif
         end if
         if (CP%WantTensors .and. l <= CP%Max_l_tensor) then
-            tot_scalar_cls(1:4,l) = tot_scalar_cls(1:4,l) + Cl_tensor(l, in,  CT_Temp:CT_Cross)
+            tot_scalar_cls(1:4,l) = tot_scalar_cls(1:4,l) + Cl_tensor(l, CT_Temp:CT_Cross)
         end if
     end do
 
     end subroutine CAMB_SetTotCls
 
-    subroutine CAMB_SetUnlensedCls(lmax, unlensed_cls, in)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_SetUnlensedCls(lmax, unlensed_cls)
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: unlensed_cls(4,0:lmax)
     integer l
 
     unlensed_cls = 0
     do l=lmin, lmax
         if (CP%WantScalars .and. l<= CP%Max_l) then
-            unlensed_cls(1:2,l) = Cl_scalar(l, in,  C_Temp:C_E)
-            unlensed_cls(4,l) = Cl_scalar(l, in,  C_Cross)
+            unlensed_cls(1:2,l) = Cl_scalar(l, C_Temp:C_E)
+            unlensed_cls(4,l) = Cl_scalar(l, C_Cross)
         end if
         if (CP%WantTensors .and. l <= CP%Max_l_tensor) then
-            unlensed_cls(1:4,l) = unlensed_cls(1:4,l) + Cl_tensor(l, in,  CT_Temp:CT_Cross)
+            unlensed_cls(1:4,l) = unlensed_cls(1:4,l) + Cl_tensor(l, CT_Temp:CT_Cross)
         end if
     end do
 
     end subroutine CAMB_SetUnlensedCls
 
-    subroutine CAMB_SetLensPotentialCls(lmax, cls, in)
+    subroutine CAMB_SetLensPotentialCls(lmax, cls)
     use constants
-    integer, intent(IN) :: lmax, in
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: cls(3, 0:lmax) !phi-phi, phi-T, phi-E
     integer l
 
     cls = 0
     if (CP%WantScalars .and. CP%DoLensing) then
         do l=lmin, min(lmax,CP%Max_l)
-            cls(1,l) = Cl_scalar(l,in,C_Phi) * (real(l+1)/l)**2/const_twopi
-            cls(2:3,l) = Cl_scalar(l,in,C_PhiTemp:C_PhiE) * ((real(l+1)/l)**1.5/const_twopi)
+            cls(1,l) = Cl_scalar(l,C_Phi) * (real(l+1)/l)**2/const_twopi
+            cls(2:3,l) = Cl_scalar(l,C_PhiTemp:C_PhiE) * ((real(l+1)/l)**1.5/const_twopi)
         end do
     end if
 
     end subroutine CAMB_SetLensPotentialCls
 
-    subroutine CAMB_SetUnlensedScalCls(lmax, scalar_Cls, in)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_SetUnlensedScalCls(lmax, scalar_Cls)
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: scalar_Cls(4, 0:lmax)
     integer lmx
 
     scalar_Cls = 0
     if (CP%WantScalars) then
         lmx = min(CP%Max_l, lmax)
-        scalar_Cls(1:2,lmin:lmx) = transpose(Cl_Scalar(lmin:lmx, in,C_Temp:C_E))
-        scalar_Cls(4,lmin:lmx) = Cl_Scalar(lmin:lmx, in,C_Cross)
+        scalar_Cls(1:2,lmin:lmx) = transpose(Cl_Scalar(lmin:lmx, C_Temp:C_E))
+        scalar_Cls(4,lmin:lmx) = Cl_Scalar(lmin:lmx, C_Cross)
     end if
 
     end subroutine CAMB_SetUnlensedScalCls
 
-    subroutine CAMB_SetlensedScalCls(lmax, lensed_Cls, in)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_SetlensedScalCls(lmax, lensed_Cls)
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: lensed_Cls(4, 0:lmax)
     integer lmx
 
     lensed_Cls = 0
     if (CP%WantScalars .and. CP%DoLensing) then
         lmx = min(lmax,lmax_lensed)
-        lensed_Cls(1:4,lmin:lmx) = transpose(Cl_lensed(lmin:lmx, in,CT_Temp:CT_Cross))
+        lensed_Cls(1:4,lmin:lmx) = transpose(Cl_lensed(lmin:lmx, CT_Temp:CT_Cross))
     end if
 
     end subroutine CAMB_SetlensedScalCls
 
-    subroutine CAMB_SetTensorCls(lmax, tensor_Cls, in)
-    integer, intent(IN) :: lmax, in
+    subroutine CAMB_SetTensorCls(lmax, tensor_Cls)
+    integer, intent(IN) :: lmax
     real(dl), intent(OUT) :: tensor_Cls(4, 0:lmax)
     integer lmx
 
     tensor_Cls = 0
     if (CP%WantTensors) then
         lmx = min(lmax,CP%Max_l_tensor)
-        tensor_Cls(1:3,lmin:lmx) = transpose(Cl_Tensor(lmin:lmx, in, CT_Temp:CT_Cross))
+        tensor_Cls(1:3,lmin:lmx) = transpose(Cl_Tensor(lmin:lmx, CT_Temp:CT_Cross))
     end if
 
     end subroutine CAMB_SetTensorCls
 
 
-    subroutine CAMB_SetUnlensedScalarArray(lmax, ScalarArray, in, n)
-    integer, intent(IN) :: lmax, in, n
+    subroutine CAMB_SetUnlensedScalarArray(lmax, ScalarArray, n)
+    integer, intent(IN) :: lmax, n
     real(dl), intent(OUT) :: ScalarArray(n, n, 0:lmax)
     integer l
 
     ScalarArray = 0
     if (CP%WantScalars) then
         do l=lmin, min(lmax,CP%Max_l)
-            ScalarArray(1:n,1:n,l) = Cl_scalar_array(l, in, 1:n,1:n)
+            ScalarArray(1:n,1:n,l) = Cl_scalar_array(l, 1:n,1:n)
         end do
     end if
 
@@ -384,13 +405,13 @@
 
     global_error_flag = 0
     curv =-Params%omegak/((c/1000)/Params%h0)**2
-    call InitializePowers(Params%InitPower,curv)
+    call Params%InitPower%Init(curv)
     if (global_error_flag==0) then
         do ix =1, n
             if (i==0) then
-                powers(ix) = ScalarPower(k(ix),1)
+                powers(ix) = Params%InitPower%ScalarPower(k(ix))
             elseif (i==2) then
-                powers(ix) = TensorPower(k(ix),1)
+                powers(ix) = Params%InitPower%TensorPower(k(ix))
             else
                 error stop 'Unknown power type index'
             end if
@@ -424,7 +445,7 @@
 
     tau=taustart
     ind=1
-    tol1=tol/exp(AccuracyBoost-1)
+    tol1=tol/exp(CP%Accuracy%AccuracyBoost*CP%Accuracy%IntTolBoost-1)
     do j=1,size(times)
         tauend = times(j)
         if (tauend<taustart) cycle
@@ -433,6 +454,7 @@
         yprime = 0
         EV%OutputTransfer =>  Arr
         EV%OutputSources => sources
+        EV%OutputStep = 0
         if (ncustomsources>0) EV%CustomSources => custom_sources
         call derivs(EV,EV%ScalEqsToPropagate,tau,y,yprime)
         nullify(EV%OutputTransfer, EV%OutputSources, EV%CustomSources)
@@ -506,6 +528,132 @@
     err = global_error_flag
     end function CAMB_TimeEvolution
 
+    function GetAllocatableSize() result(sz)
+    use iso_c_binding
+    Type(dummyAllocatable) :: T
+    integer sz
+
+    sz = storage_size(T)
+
+    end function GetAllocatableSize
+
+    subroutine CAMBparams_SetDarkEnergy(P, i, handle)
+    Type(CAMBparams), target :: P
+    integer, intent(in) :: i
+    type(c_ptr), intent(out)  ::  handle
+
+    if (allocated(P%DarkEnergy)) deallocate(P%DarkEnergy)
+    if (i==0) then
+        allocate(TDarkEnergyFluid::P%DarkEnergy)
+    else if (i==1) then
+        allocate(TDarkEnergyPPF::P%DarkEnergy)
+    else
+        error stop 'Unknown dark energy model'
+    end if
+
+    !can't reference polymorphic type, but can reference first data entry (which is same thing here)
+    handle = c_loc(P%DarkEnergy%w_lam)
+
+    end subroutine CAMBparams_SetDarkEnergy
+
+    subroutine CAMBparams_GetAllocatables(P, i,de_handle, nonlin_handle, j, power_handle)
+    Type(CAMBparams), target :: P
+    integer, intent(out) :: i,j
+    type(c_ptr), intent(out)  ::  de_handle, nonlin_handle, power_handle
+
+    if (allocated(P%DarkEnergy)) then
+        select type (point => P%DarkEnergy)
+        class is (TDarkEnergyFluid)
+            i =0
+        class is (TDarkEnergyPPF)
+            i =1
+            class default
+            i = -1
+        end select
+        de_handle = c_loc(P%DarkEnergy%w_lam)
+    else
+        de_handle = c_null_ptr
+    end if
+    if (allocated(P%NonLinearModel)) then
+        nonlin_handle = c_loc(P%NonLinearModel%Min_kh_nonlinear)
+    else
+        nonlin_handle = c_null_ptr
+    end if
+    if (allocated(P%InitPower)) then
+        select type (PK => P%InitPower)
+        class is (TInitialPowerLaw)
+            j=0
+        class is (TSplinedInitialPower)
+            j=1
+            class default
+            j=-1
+        end select
+        power_handle = c_loc(P%InitPower%curv)
+    else
+        power_handle = c_null_ptr
+    end if
+
+    end subroutine CAMBparams_GetAllocatables
+
+    subroutine CAMBparams_SetDarkEnergyTable(DE, a, w, n)
+    Type(TDarkEnergyBase) :: DE
+    integer, intent(in) :: n
+    real(dl), intent(in) :: a(n), w(n)
+
+    call DE%SetwTable(a,w)
+
+    end subroutine CAMBparams_SetDarkEnergyTable
+
+    subroutine CAMBparams_SetEqual(P, P2)
+    Type(CAMBparams), target :: P, P2
+
+    P =P2
+
+    end subroutine CAMBparams_SetEqual
+
+    subroutine CAMBparams_DarkEnergyStressEnergy(DE, a, grhov_t, w, n)
+    Type(TDarkEnergyBase) :: DE
+    integer, intent(in) :: n
+    real(dl), intent(in) :: a(n)
+    real(dl), intent(out) :: grhov_t(n), w(n)
+    real(dl) grhov
+    integer i
+
+    call DE%Init()
+    do i=1, n
+        call DE%BackgroundDensityAndPressure(1._dl, a(i), grhov_t(i), w(i))
+    end do
+    grhov_t = grhov_t/a**2
+
+    end subroutine CAMBparams_DarkEnergyStressEnergy
+
+    subroutine CAMBparams_SetPKTable(P, n, nt, k, PK, PKt, power_handle)
+    use interpolation
+    integer, intent(in) :: n, nt
+    real(dl), intent(in) :: k(max(n,nt)), PK(n), PKt(nt)
+    Type(CAMBparams), target :: P
+    type(c_ptr), intent(out)  :: power_handle
+
+    if (allocated(P%InitPower)) deallocate(P%InitPower)
+    allocate(TSplinedInitialPower::P%InitPower)
+
+    select type (InitPower => P%InitPower)
+    class is (TSplinedInitialPower)
+        call InitPower%SetScalarTable(n,k, PK)
+        call InitPower%SetTensorTable(nt,k, PKt)
+    end select
+    power_handle = c_loc(P%InitPower%curv)
+
+    end subroutine CAMBparams_SetPKTable
+
+    subroutine CAMBParams_Free(P)
+    Type(CAMBparams) :: P
+
+    if (allocated(P%DarkEnergy)) deallocate(P%DarkEnergy)
+    if (allocated(P%NonLinearModel)) deallocate(P%NonLinearModel)
+    if (allocated(P%InitPower)) deallocate(P%InitPower)
+
+    end subroutine CAMBParams_Free
 
     subroutine CAMB_SetCustomSourcesFunc(ncustomsources, c_source_func, ell_scales)
     use GaugeInterface
@@ -598,5 +746,86 @@
         end do
     end do
     end subroutine Utils_3j_integrate
+
+    subroutine InitialPowerLaw_new(handle)
+    type(c_ptr), intent(out) :: handle
+    Type (TInitialPowerLaw), pointer :: pInitialPowerLaw
+
+    allocate(pInitialPowerLaw)
+    handle = c_loc(pInitialPowerLaw)
+
+    end subroutine InitialPowerLaw_new
+
+    subroutine InitialPowerLaw_free(cptr)
+    type(c_ptr)  :: cptr
+    Type (TInitialPowerLaw), pointer :: pInitialPowerLaw
+
+    call c_f_pointer(cptr, pInitialPowerLaw)
+    deallocate(pInitialPowerLaw)
+
+    end subroutine InitialPowerLaw_free
+
+    subroutine SplinedInitialPower_new(handle)
+    type(c_ptr), intent(out) :: handle
+    Type (TSplinedInitialPower), pointer :: pSplinedInitialPower
+
+    allocate(pSplinedInitialPower)
+    handle = c_loc(pSplinedInitialPower)
+
+    end subroutine SplinedInitialPower_new
+
+    subroutine SplinedInitialPower_free(cptr)
+    type(c_ptr)  :: cptr
+    Type (TSplinedInitialPower), pointer :: pSplinedInitialPower
+
+    call c_f_pointer(cptr, pSplinedInitialPower)
+    deallocate(pSplinedInitialPower)
+
+    end subroutine SplinedInitialPower_free
+
+    subroutine SplinedInitialPower_setscalartable(this, n, k, PK)
+    Type(TSplinedInitialPower) :: this
+    integer, intent(in) :: n
+    real(dl), intent(in) :: k(n), PK(n)
+
+    call this%SetScalarTable(n,k,Pk)
+
+    end subroutine SplinedInitialPower_setscalartable
+
+    subroutine SplinedInitialPower_settensortable(this, n, k, PK)
+    Type(TSplinedInitialPower) :: this
+    integer, intent(in) :: n
+    real(dl), intent(in) :: k(n), PK(n)
+
+    call this%SetTensorTable(n,k,Pk)
+
+    end subroutine SplinedInitialPower_settensortable
+
+    subroutine SplinedInitialPower_setscalarlogregular(this, kmin, kmax, n, PK)
+    Type(TSplinedInitialPower) :: this
+    integer, intent(in) :: n
+    real(dl), intent(in) ::kmin, kmax, PK(n)
+
+    call this%SetScalarLogRegular(kmin, kmax, n, PK)
+
+    end subroutine SplinedInitialPower_setscalarlogregular
+
+    subroutine SplinedInitialPower_settensorlogregular(this, kmin, kmax, n, PK)
+    Type(TSplinedInitialPower) :: this
+    integer, intent(in) :: n
+    real(dl), intent(in) ::kmin, kmax, PK(n)
+
+    call this%SetTensorLogRegular(kmin, kmax, n, PK)
+
+    end subroutine SplinedInitialPower_settensorlogregular
+
+
+    logical function SplinedInitialPower_HasTensors(this)
+    Type(TSplinedInitialPower) :: this
+
+    SplinedInitialPower_HasTensors = allocated(this%Ptensor)
+
+    end function SplinedInitialPower_HasTensors
+
 
     end module handles

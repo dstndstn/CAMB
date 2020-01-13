@@ -21,5 +21,3 @@ ALens_Fiducial = dll_import(c_double, "lensing", "alens_fiducial")
 
 lensing_includes_tensors = dll_import(c_bool, "lensing", "lensing_includes_tensors")
 # lensing_includes_tensors.value = False
-
-ALens = dll_import(c_double, "cambmain", "alens")
